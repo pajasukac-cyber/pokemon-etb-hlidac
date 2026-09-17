@@ -970,9 +970,39 @@ def luxor_check(driver, name, url):
     text = safe_text(driver)
     t = text.lower()
 
-    price = price_from_element(driver, ["[class*='price']", "meta[itemprop='price']"])
+    # Luxor: nepoužívat obecný price_from_text jako první volbu.
+    # U cen typu 3 399 Kč / 3399 Kč nesmí parser vrátit jen 339.
+    price = None
+
+    # 1) strukturovaná meta cena
+    try:
+        meta = driver.find_elements(By.CSS_SELECTOR, "meta[itemprop='price']")
+        for el in meta:
+            raw = (el.get_attribute("content") or "").strip()
+            m = re.search(r"(?<!\d)(\d{3,5})(?:[.,](\d{1,2}))?(?!\d)", raw)
+            if m:
+                price = int(m.group(1))
+                break
+    except Exception:
+        pass
+
+    # 2) text stránky – bereme celé částky s Kč, včetně mezer jako 3 399 Kč.
     if price is None:
-        price = price_from_text(text)
+        price_patterns = [
+            r"(?<!\d)(\d{1,2}(?:[\s\u00A0]\d{3})+)(?:[.,]\d{1,2})?\s*Kč",
+            r"(?<!\d)(\d{3,5})(?:[.,]\d{1,2})?\s*Kč",
+        ]
+        for pattern in price_patterns:
+            matches = re.findall(pattern, text, flags=re.I)
+            if matches:
+                raw = matches[0].replace(" ", "").replace("\u00a0", "")
+                try:
+                    price = int(re.sub(r"[^0-9]", "", raw))
+                    break
+                except Exception:
+                    pass
+
+    # 3) HTML jako poslední záloha
     if price is None:
         price = price_from_html(driver)
 
