@@ -809,11 +809,15 @@ def luxor_find(driver):
     for a in driver.find_elements(By.TAG_NAME, "a"):
         try:
             href = normalize_url(a.get_attribute("href"))
+            if href.startswith("/"):
+                href = "https://www.luxor.cz" + href
             name = a.text.strip()
             low = (href + " " + name).lower()
             if not href or href in seen:
                 continue
-            if "luxor.cz/v/" not in low:
+            # Selenium může u Luxoru vracet href jako absolutní i relativní URL.
+            # Stačí tedy produktová cesta /v/ a název/URL s Elite Trainer Box.
+            if "/v/" not in low:
                 continue
             if "elite-trainer-box" not in low and "elite trainer box" not in low:
                 continue
