@@ -860,141 +860,109 @@ def tcgshop_check(driver, name, url):
 
 
 # ---------- LUXOR ----------
+LUXOR_KNOWN_ETB_URLS = [
+    "https://www.luxor.cz/v/2175941/pokemon-tcg-mega-evolution-03-perfect-order-elite-trainer-box",
+    "https://www.luxor.cz/v/2125031/pokemon-tcg-scarlet-violet-105-white-flare-elite-trainer-box",
+    "https://www.luxor.cz/v/2125032/pokemon-tcg-scarlet-violet-105-black-bolt-elite-trainer-box",
+    "https://www.luxor.cz/v/2205423/pokemon-tcg-scarlet-violet-10-destined-rivals-elite-trainer-box",
+    "https://www.luxor.cz/v/2090204/pokemon-tcg-scarlet-violet-85-prismatic-evolutions-elite-trainer-box",
+    "https://www.luxor.cz/v/2022144/pokemon-tcg-sv45-paldean-fates-elite-trainer-box",
+    "https://www.luxor.cz/v/1983273/pokemon-tcg-scarlet-violet-151-elite-trainer-box",
+    "https://www.luxor.cz/v/1992053/pokemon-tcg-scarlet-violet-04-paradox-rift-elite-trainer-box",
+]
+
 def luxor_find(driver):
     driver.get(STORES["LUXOR.CZ"])
     time.sleep(4)
-
-    # Cookie lištu zkusíme zavřít/potvrdit, ale nespoléháme na ni.
-    for label in ["Povolit vše", "Souhlasím", "Povolit"]:
-        try:
-            els = driver.find_elements(
-                By.XPATH,
-                f"//*[self::button or self::a or @role='button'][contains(normalize-space(.), '{label}')]"
-            )
-            for el in els:
-                try:
-                    if el.is_displayed() and el.is_enabled():
-                        driver.execute_script("arguments[0].click();", el)
-                        time.sleep(1)
-                        break
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    # Nejprve se pokusíme stránku rozrolovat, aby se načetly lazy-loaded produkty.
-    for _ in range(12):
-        try:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(0.8)
-        except Exception:
-            break
-
-    # Některé verze Luxoru používají tlačítko "Načíst další produkty".
-    for _ in range(10):
-        try:
-            target = None
-            for el in driver.find_elements(
-                By.XPATH,
-                "//*[self::button or self::a or @role='button'][contains(normalize-space(.), 'Načíst další produkty')]"
-            ):
-                try:
-                    if el.is_displayed() and el.is_enabled():
-                        target = el
-                        break
-                except Exception:
-                    pass
-            if target is None:
-                break
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
-            time.sleep(0.4)
-            driver.execute_script("arguments[0].click();", target)
-            time.sleep(1.5)
-        except Exception:
-            break
-
-    result = []
-    seen = set()
+    result, seen = [], set()
 
     def add_candidate(name, href):
-        href = (href or "").strip().replace("&amp;", "&")
-        if not href:
-            return
-
-        # Luxor může vracet absolutní i relativní odkazy.
-        if href.startswith("//"):
-            href = "https:" + href
-        elif href.startswith("/"):
-            href = "https://www.luxor.cz" + href
-
-        href = normalize_url(href)
-        low = (href + " " + (name or "")).lower()
-
-        # Produktové stránky Luxoru mají /v/<id>/...
-        if "/v/" not in href.lower():
-            return
-        if "elite-trainer-box" not in low and "elite trainer box" not in low:
-            return
-        if href in seen:
-            return
-
-        seen.add(href)
-        result.append((name or "Pokémon Elite Trainer Box", href))
-
-    # 1) Normální odkazy v DOM.
-    for a in driver.find_elements(By.TAG_NAME, "a"):
         try:
-            add_candidate(a.text.strip(), a.get_attribute("href"))
+            href = (href or "").strip().replace("\\/", "/").replace("&amp;", "&")
+            if href.startswith("//"):
+                href = "https:" + href
+            elif href.startswith("/"):
+                href = "https://www.luxor.cz" + href
+            href = normalize_url(href)
+            low = (href + " " + (name or "")).lower()
+            if "/v/" not in low:
+                return
+            if "elite-trainer-box" not in low and "elite trainer box" not in low:
+                return
+            if href in seen:
+                return
+            seen.add(href)
+            result.append((name or "Pokémon Elite Trainer Box", href))
         except Exception:
             pass
 
-    # 2) Důležitá záloha: zdrojový HTML/JSON stránky.
-    #    Tohle obejde problém, kdy Selenium vidí jen cookie text, ale
-    #    produktové URL už jsou přítomné v datech stránky.
+    try:
+        anchors = driver.execute_script("""
+            return Array.from(document.querySelectorAll('a')).map(a => ({
+                href: a.href || '',
+                text: (a.innerText || a.textContent || '').trim()
+            }));
+        """)
+        for item in anchors:
+            add_candidate(item.get("text", ""), item.get("href", ""))
+    except Exception:
+        pass
+
+    try:
+        for a in driver.find_elements(By.TAG_NAME, "a"):
+            try:
+                add_candidate(a.text.strip(), a.get_attribute("href"))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     try:
         html = driver.page_source
-        html = html.replace("\\/", "/").replace("&amp;", "&")
-
+        variants = [
+            html,
+            html.replace("\\/", "/"),
+            html.replace("\\u002F", "/").replace("\\/", "/"),
+            html.replace("&amp;", "&").replace("\\/", "/"),
+        ]
         patterns = [
             r'https?://(?:www\.)?luxor\.cz/v/[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+',
             r'(?<![A-Za-z0-9])(/v/[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+)',
         ]
-
-        for pattern in patterns:
-            for href in re.findall(pattern, html, flags=re.I):
-                add_candidate("", href)
+        for h in variants:
+            for pattern in patterns:
+                for href in re.findall(pattern, h, flags=re.I):
+                    add_candidate("", href)
     except Exception:
         pass
 
-    # 3) Ověření detailů. Když detail vrátí správné H1, použijeme ji.
-    #    Když ne, kandidáta stále necháme, protože URL už obsahuje ETB.
+    # Pojistka pro ETB, které Luxor aktuálně nabízí na samostatných stránkách.
+    for href in LUXOR_KNOWN_ETB_URLS:
+        add_candidate("", href)
+
     verified = []
     for name, href in result:
         try:
             driver.get(href)
-            time.sleep(0.9)
+            time.sleep(0.8)
             try:
                 h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
             except Exception:
                 h1 = ""
-
             if "elite trainer box" in h1.lower():
                 verified.append((h1, href))
-            elif "elite trainer box" in name.lower() or "elite-trainer-box" in href.lower():
+            elif "elite-trainer-box" in href.lower():
                 verified.append((name, href))
         except Exception:
-            if "elite trainer box" in name.lower() or "elite-trainer-box" in href.lower():
+            if "elite-trainer-box" in href.lower():
                 verified.append((name, href))
 
-    unique = []
-    seen_urls = set()
+    unique, seen_urls = [], set()
     for name, href in verified:
         if href not in seen_urls:
             seen_urls.add(href)
             unique.append((name, href))
-
     return unique
-
 
 def luxor_check(driver, name, url):
     driver.get(url)
@@ -1009,15 +977,16 @@ def luxor_check(driver, name, url):
         price = price_from_html(driver)
 
     bad = [
-        "není skladem", "neni skladem", "není k dispozici", "neni k dispozici",
-        "vyprodáno", "vyprodano", "předobjednávka", "predobjednavka",
+        "není skladem", "neni skladem",
+        "není k dispozici", "neni k dispozici",
+        "vyprodáno", "vyprodano",
+        "předobjednávka", "predobjednavka",
     ]
     if any(x in t for x in bad):
         return price, False
 
     good = ["skladem", "do košíku", "do kosiku", "koupit", "rezervovat"]
     return price, any(x in t for x in good)
-
 
 # ---------- KNIHY DOBROVSKÝ ----------
 def knihy_dobrovsky_find(driver):
