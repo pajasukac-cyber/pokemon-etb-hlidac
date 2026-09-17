@@ -81,7 +81,16 @@ def make_driver():
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-notifications")
     options.add_argument("--lang=cs-CZ")
-    return webdriver.Chrome(options=options)
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+    driver = webdriver.Chrome(options=options)
+    try:
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        })
+    except Exception:
+        pass
+    return driver
 
 
 def driver_alive(driver):
@@ -234,32 +243,73 @@ def explicit_stock(text):
 # ---------- SMARTY ----------
 def smarty_find(driver):
     driver.get(STORES["SMARTY.CZ"])
-    time.sleep(2)
+    time.sleep(3)
 
     result = []
     seen = set()
 
+    # 1) Běžné odkazy v DOM.
     for a in driver.find_elements(By.TAG_NAME, "a"):
         try:
             href = normalize_url(a.get_attribute("href"))
             name = a.text.strip()
-
-            # Smarty product links have an ETB product path and a product name.
+            low = href.lower()
             if not href or href in seen:
                 continue
-            if "elite-trainer-box" not in href.lower():
+            if "smarty.cz/" not in low or "elite-trainer-box" not in low:
                 continue
-            if "4c14603" in href.lower():
+            if "4c14603" in low:
                 continue
-            if name.lower() in ("", "top", "nejdražší", "nejlevnější", "novinky", "elite trainer box"):
-                continue
-
             seen.add(href)
             result.append((name, href))
         except Exception:
             pass
 
-    return result
+    # 2) Záloha: produktové URL přímo z HTML. Funguje i když jsou
+    # produktové karty v headless Chromu bez textového <a> elementu.
+    try:
+        html = driver.page_source.replace("\\/", "/")
+        patterns = [
+            r"https?://www\\.smarty\\.cz/[^\"'<>\\s]+elite-trainer-box[^\"'<>\\s]*",
+            r"https?://smarty\\.cz/[^\"'<>\\s]+elite-trainer-box[^\"'<>\\s]*",
+        ]
+        for pattern in patterns:
+            for href in re.findall(pattern, html, flags=re.I):
+                href = normalize_url(href)
+                low = href.lower()
+                if not href or href in seen:
+                    continue
+                if "elite-trainer-box" not in low or "4c14603" in low:
+                    continue
+                seen.add(href)
+                result.append(("", href))
+    except Exception:
+        pass
+
+    # 3) Produktové URL ověříme přes H1; pokud H1 v headless režimu
+    # selže, ponecháme kandidáta — detail se následně kontroluje v smarty_check.
+    verified = []
+    for old_name, href in result:
+        try:
+            driver.get(href)
+            time.sleep(1.0)
+            h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
+            if "elite trainer box" in h1.lower():
+                verified.append((h1, href))
+            elif old_name and "elite trainer box" in old_name.lower():
+                verified.append((old_name, href))
+        except Exception:
+            if old_name and "elite trainer box" in old_name.lower():
+                verified.append((old_name, href))
+
+    # Bez duplicit.
+    unique = []
+    seen_urls = set()
+    for name, href in verified:
+        if href not in seen_urls:
+            seen_urls.add(href)
+            unique.append((name or "Pokémon Elite Trainer Box", href))
+    return unique
 
 
 def smarty_check(driver, name, url):
@@ -386,11 +436,21 @@ def pokemon4u_check(driver, name, url):
 # ---------- ALZA ----------
 def alza_find(driver):
     driver.get(STORES["ALZA.CZ"])
-    time.sleep(2.5)
+    time.sleep(4)
 
     candidates = []
     seen = set()
 
+    # Zkusíme i odscrollovat stránku, protože Alza může část produktů
+    # doplnit až po scrollování.
+    try:
+        for _ in range(5):
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(0.8)
+    except Exception:
+        pass
+
+    # 1) Běžné odkazy v DOM.
     for a in driver.find_elements(By.TAG_NAME, "a"):
         try:
             href = normalize_url(a.get_attribute("href"))
@@ -399,16 +459,11 @@ def alza_find(driver):
                 continue
 
             low = href.lower()
-            low_name = name.lower()
-
-            # Aktuální Alza URL pro ETB: /hracky/pokemon-tcg-...-elite-trainer-box-dXXXXX.htm
             if "/hracky/pokemon-tcg-" not in low:
                 continue
             if "elite-trainer-box" not in low:
                 continue
             if "18903046.htm" in low:
-                continue
-            if low_name in ("přejít na obsah", "prejit na obsah", "elite trainer boxy"):
                 continue
 
             seen.add(href)
@@ -416,11 +471,29 @@ def alza_find(driver):
         except Exception:
             pass
 
+    # 2) Záloha z HTML.
+    try:
+        html = driver.page_source.replace("\\/", "/")
+        pattern = r"https?://www\\.alza\\.cz/hracky/pokemon-tcg-[^\"'<>\\s]+elite-trainer-box[^\"'<>\\s]*"
+        for href in re.findall(pattern, html, flags=re.I):
+            href = normalize_url(href)
+            low = href.lower()
+            if not href or href in seen:
+                continue
+            if "18903046.htm" in low or "elite-trainer-box" not in low:
+                continue
+            seen.add(href)
+            candidates.append(("", href))
+    except Exception:
+        pass
+
+    # Ověření H1, ale při problému s H1 nepouštíme kandidáta automaticky,
+    # pokud URL už jednoznačně obsahuje elite-trainer-box.
     result = []
     for original_name, href in candidates:
         try:
             driver.get(href)
-            time.sleep(0.8)
+            time.sleep(1.0)
             try:
                 h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
             except Exception:
@@ -428,10 +501,19 @@ def alza_find(driver):
 
             if "elite trainer box" in h1.lower():
                 result.append((h1, href))
+            elif "elite-trainer-box" in href.lower():
+                result.append((original_name or "Pokémon Elite Trainer Box", href))
         except Exception:
-            pass
+            if "elite-trainer-box" in href.lower():
+                result.append((original_name or "Pokémon Elite Trainer Box", href))
 
-    return result
+    unique = []
+    seen_urls = set()
+    for name, href in result:
+        if href not in seen_urls:
+            seen_urls.add(href)
+            unique.append((name, href))
+    return unique
 
 
 def alza_check(driver, name, url):
@@ -1030,6 +1112,14 @@ def check_store(driver, shop, state):
         return False
 
     print("Nalezeno ETB:", len(links))
+    if not links:
+        try:
+            print("DEBUG URL:", driver.current_url)
+            print("DEBUG TITLE:", driver.title)
+            body_preview = safe_text(driver).replace("\\n", " ")[:300]
+            print("DEBUG BODY:", body_preview)
+        except Exception:
+            pass
     changed = False
 
     for name, url in links:
