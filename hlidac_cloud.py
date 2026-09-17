@@ -22,6 +22,8 @@ STORES = {
     "GOOD-LUCK.CZ": "https://www.good-luck.cz/etb",
     "POKEMALL.CZ": "https://www.pokemall.cz/kategorie/elite-trainer-box/",
     "TCGSHOP.CZ": "https://www.tcgshop.cz/elite-trainer-boxy/",
+    "LUXOR.CZ": "https://www.luxor.cz/c/11589/pokemon",
+    "KNIHY-DOBROVSKY.CZ": "https://www.knihydobrovsky.cz/elite-trainer-box",
 }
 
 
@@ -774,6 +776,208 @@ def tcgshop_check(driver, name, url):
         "pridat do kosiku",
     ])
 
+
+# ---------- LUXOR ----------
+def luxor_find(driver):
+    driver.get(STORES["LUXOR.CZ"])
+    time.sleep(2)
+
+    # Luxor loads the Pokémon category progressively. Click "Načíst další produkty"
+    # a few times so we see more than just the first 13 products.
+    for _ in range(6):
+        try:
+            buttons = driver.find_elements(By.XPATH, "//*[contains(normalize-space(.), 'Načíst další produkty')]")
+            target = None
+            for b in buttons:
+                try:
+                    if b.is_displayed() and b.is_enabled():
+                        target = b
+                        break
+                except Exception:
+                    pass
+            if target is None:
+                break
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
+            time.sleep(0.3)
+            driver.execute_script("arguments[0].click();", target)
+            time.sleep(1.2)
+        except Exception:
+            break
+
+    result = []
+    seen = set()
+    for a in driver.find_elements(By.TAG_NAME, "a"):
+        try:
+            href = normalize_url(a.get_attribute("href"))
+            name = a.text.strip()
+            low = (href + " " + name).lower()
+            if not href or href in seen:
+                continue
+            if "luxor.cz/v/" not in low:
+                continue
+            if "elite-trainer-box" not in low and "elite trainer box" not in low:
+                continue
+            seen.add(href)
+            result.append((name, href))
+        except Exception:
+            pass
+
+    # Ověříme názvy na produktových stránkách, aby se do seznamu nedostala
+    # navigace nebo duplicitní odkazy.
+    verified = []
+    for old_name, href in result:
+        try:
+            driver.get(href)
+            time.sleep(0.6)
+            h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
+            if "elite trainer box" in h1.lower():
+                verified.append((h1, href))
+        except Exception:
+            pass
+
+    return verified
+
+
+def luxor_check(driver, name, url):
+    driver.get(url)
+    time.sleep(1.2)
+
+    text = safe_text(driver)
+    t = text.lower()
+
+    # Vezmeme detail produktu kolem H1, aby nás neovlivnily doporučené produkty.
+    scope_text = text
+    try:
+        h1 = driver.find_element(By.TAG_NAME, "h1")
+        node = h1
+        for _ in range(7):
+            parent = node.find_element(By.XPATH, "./..")
+            pt = parent.text.strip()
+            if ("elite trainer box" in pt.lower()
+                    and ("Kč" in pt or ",-" in pt)
+                    and ("skladem" in pt.lower() or "košíku" in pt.lower()
+                         or "kosiku" in pt.lower() or "není skladem" in pt.lower()
+                         or "neni skladem" in pt.lower())):
+                scope_text = pt
+                break
+            node = parent
+    except Exception:
+        pass
+
+    scope_low = scope_text.lower()
+    price = price_from_text(scope_text)
+    if price is None:
+        price = price_from_element(driver, [
+            "[class*='price']",
+            "meta[itemprop='price']",
+        ])
+    if price is None:
+        price = price_from_html(driver)
+
+    if any(x in scope_low for x in [
+        "není skladem", "neni skladem", "není k dispozici", "neni k dispozici",
+        "vyprodáno", "vyprodano", "předobjednávka", "predobjednavka"
+    ]):
+        return price, False
+
+    available = any(x in scope_low for x in [
+        "skladem", "do košíku", "do kosiku", "koupit", "rezervovat"
+    ])
+    return price, available
+
+
+# ---------- KNIHY DOBROVSKÝ ----------
+def knihy_dobrovsky_find(driver):
+    driver.get(STORES["KNIHY-DOBROVSKY.CZ"])
+    time.sleep(2)
+
+    # Kategorie má 43 ETB a stránkování po 24 kusech. Načteme další produkty,
+    # pokud je tlačítko dostupné.
+    for _ in range(3):
+        try:
+            buttons = driver.find_elements(By.XPATH, "//*[contains(normalize-space(.), 'Zobrazit dalších 24 produktů')]")
+            target = None
+            for b in buttons:
+                try:
+                    if b.is_displayed() and b.is_enabled():
+                        target = b
+                        break
+                except Exception:
+                    pass
+            if target is None:
+                break
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
+            time.sleep(0.3)
+            driver.execute_script("arguments[0].click();", target)
+            time.sleep(1.2)
+        except Exception:
+            break
+
+    result = []
+    seen = set()
+    for a in driver.find_elements(By.TAG_NAME, "a"):
+        try:
+            href = normalize_url(a.get_attribute("href"))
+            name = a.text.strip()
+            low = (href + " " + name).lower()
+            if not href or href in seen:
+                continue
+            if "knihydobrovsky.cz/" not in low:
+                continue
+            if "elite-trainer-box" not in low and "elite trainer box" not in low:
+                continue
+            if "/hra/" not in low and "/hracka/" not in low:
+                continue
+            seen.add(href)
+            result.append((name, href))
+        except Exception:
+            pass
+
+    verified = []
+    for old_name, href in result:
+        try:
+            driver.get(href)
+            time.sleep(0.6)
+            h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
+            if "elite trainer box" in h1.lower():
+                verified.append((h1, href))
+        except Exception:
+            pass
+
+    return verified
+
+
+def knihy_dobrovsky_check(driver, name, url):
+    driver.get(url)
+    time.sleep(1.2)
+    text = safe_text(driver)
+
+    price = price_from_element(driver, [
+        "[class*='price']",
+        "meta[itemprop='price']",
+    ])
+    if price is None:
+        price = price_from_text("\n".join(text.splitlines()[:140]))
+    if price is None:
+        price = price_from_html(driver)
+
+    t = text.lower()
+    negatives = [
+        "nedostupné", "nedostupne", "produkt je vyprodaný", "produkt je vyprodany",
+        "vyprodáno", "vyprodano", "není skladem", "neni skladem",
+        "předobjednávka", "predobjednavka",
+    ]
+    if any(x in t for x in negatives):
+        return price, False
+
+    # Na produktové stránce je dostupnost přímo u produktu; "Do košíku"
+    # je silný signál, že lze objednat.
+    available = any(x in t for x in [
+        "do košíku", "do kosiku", "skladem na e-shopu", "skladem",
+        "koupit"
+    ])
+    return price, available
+
 FINDERS = {
     "SMARTY.CZ": smarty_find,
     "POKEMON4U.CZ": pokemon4u_find,
@@ -781,6 +985,8 @@ FINDERS = {
     "GOOD-LUCK.CZ": goodluck_find,
     "POKEMALL.CZ": pokemall_find,
     "TCGSHOP.CZ": tcgshop_find,
+    "LUXOR.CZ": luxor_find,
+    "KNIHY-DOBROVSKY.CZ": knihy_dobrovsky_find,
 }
 
 CHECKERS = {
@@ -790,6 +996,8 @@ CHECKERS = {
     "GOOD-LUCK.CZ": goodluck_check,
     "POKEMALL.CZ": pokemall_check,
     "TCGSHOP.CZ": tcgshop_check,
+    "LUXOR.CZ": luxor_check,
+    "KNIHY-DOBROVSKY.CZ": knihy_dobrovsky_check,
 }
 
 
@@ -867,10 +1075,6 @@ def main():
             driver.quit()
         except Exception:
             pass
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":
