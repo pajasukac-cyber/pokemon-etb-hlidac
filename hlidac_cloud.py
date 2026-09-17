@@ -780,13 +780,15 @@ def tcgshop_check(driver, name, url):
 # ---------- LUXOR ----------
 def luxor_find(driver):
     driver.get(STORES["LUXOR.CZ"])
-    time.sleep(2)
+    time.sleep(3)
 
-    # Luxor loads the Pokémon category progressively. Click "Načíst další produkty"
-    # a few times so we see more than just the first 13 products.
-    for _ in range(6):
+    # Luxor načítá produkty postupně. Zkusíme několikrát načíst další produkty.
+    for _ in range(8):
         try:
-            buttons = driver.find_elements(By.XPATH, "//*[contains(normalize-space(.), 'Načíst další produkty')]")
+            buttons = driver.find_elements(
+                By.XPATH,
+                "//*[contains(normalize-space(.), 'Načíst další produkty')]"
+            )
             target = None
             for b in buttons:
                 try:
@@ -798,41 +800,55 @@ def luxor_find(driver):
             if target is None:
                 break
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
-            time.sleep(0.3)
+            time.sleep(0.4)
             driver.execute_script("arguments[0].click();", target)
-            time.sleep(1.2)
+            time.sleep(1.5)
         except Exception:
             break
 
     result = []
     seen = set()
+
+    # 1) Normální odkazy v DOM.
     for a in driver.find_elements(By.TAG_NAME, "a"):
         try:
             href = normalize_url(a.get_attribute("href"))
-            if href.startswith("/"):
-                href = "https://www.luxor.cz" + href
             name = a.text.strip()
             low = (href + " " + name).lower()
             if not href or href in seen:
                 continue
-            # Selenium může u Luxoru vracet href jako absolutní i relativní URL.
-            # Stačí tedy produktová cesta /v/ a název/URL s Elite Trainer Box.
             if "/v/" not in low:
                 continue
-            if "elite-trainer-box" not in low and "elite trainer box" not in low:
+            if not ("elite trainer box" in low or "elite-trainer-box" in low):
                 continue
             seen.add(href)
             result.append((name, href))
         except Exception:
             pass
 
-    # Ověříme názvy na produktových stránkách, aby se do seznamu nedostala
-    # navigace nebo duplicitní odkazy.
+    # 2) Záloha: vytáhneme produktové URL přímo z HTML.
+    # Některé odkazy Luxoru Selenium nevrací jako běžný <a> element,
+    # přesto jsou v page_source.
+    try:
+        html = driver.page_source
+        for href in re.findall(r'https?://www\.luxor\.cz/v/[^\"\'<>\s]+', html, flags=re.I):
+            href = normalize_url(href)
+            low = href.lower()
+            if href in seen or "/v/" not in low:
+                continue
+            if not ("elite-trainer-box" in low or "elite-trainer-box" in low.replace("_", "-")):
+                continue
+            seen.add(href)
+            result.append(("", href))
+    except Exception:
+        pass
+
+    # Ověření přímo na produktové stránce.
     verified = []
     for old_name, href in result:
         try:
             driver.get(href)
-            time.sleep(0.6)
+            time.sleep(0.8)
             h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
             if "elite trainer box" in h1.lower():
                 verified.append((h1, href))
@@ -840,7 +856,6 @@ def luxor_find(driver):
             pass
 
     return verified
-
 
 def luxor_check(driver, name, url):
     driver.get(url)
