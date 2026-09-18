@@ -860,7 +860,10 @@ def tcgshop_check(driver, name, url):
 
 
 # ---------- LUXOR ----------
-LUXOR_KNOWN_ETB_URLS = [
+# Luxor kontrolujeme přímo přes produktové stránky.
+# Kategorie není spolehlivá pro vyprodané produkty – produkt může existovat,
+# ale v kategorickém výpisu se nezobrazí.
+LUXOR_ETB_URLS = [
     "https://www.luxor.cz/v/2175941/pokemon-tcg-mega-evolution-03-perfect-order-elite-trainer-box",
     "https://www.luxor.cz/v/2125031/pokemon-tcg-scarlet-violet-105-white-flare-elite-trainer-box",
     "https://www.luxor.cz/v/2125032/pokemon-tcg-scarlet-violet-105-black-bolt-elite-trainer-box",
@@ -872,139 +875,102 @@ LUXOR_KNOWN_ETB_URLS = [
 ]
 
 def luxor_find(driver):
-    driver.get(STORES["LUXOR.CZ"])
-    time.sleep(4)
-    result, seen = [], set()
+    # Žádné hledání v kategorii. Vracíme pouze přímé produktové URL.
+    result = []
+    for url in LUXOR_ETB_URLS:
+        name = url.rsplit("/", 1)[-1].replace("-", " ").title()
+        result.append((name, url))
+    return result
 
-    def add_candidate(name, href):
-        try:
-            href = (href or "").strip().replace("\\/", "/").replace("&amp;", "&")
-            if href.startswith("//"):
-                href = "https:" + href
-            elif href.startswith("/"):
-                href = "https://www.luxor.cz" + href
-            href = normalize_url(href)
-            low = (href + " " + (name or "")).lower()
-            if "/v/" not in low:
-                return
-            if "elite-trainer-box" not in low and "elite trainer box" not in low:
-                return
-            if href in seen:
-                return
-            seen.add(href)
-            result.append((name or "Pokémon Elite Trainer Box", href))
-        except Exception:
-            pass
+def _find_luxor_json_price(obj):
+    """Najde Product -> offers -> price v JSON-LD, bez hledání náhodných čísel."""
+    if isinstance(obj, dict):
+        offers = obj.get("offers")
+        if isinstance(offers, dict):
+            price = offers.get("price")
+            if price not in (None, ""):
+                try:
+                    return int(round(float(str(price).replace(",", "."))))
+                except Exception:
+                    pass
+        elif isinstance(offers, list):
+            for offer in offers:
+                found = _find_luxor_json_price({"offers": offer})
+                if found is not None:
+                    return found
 
-    try:
-        anchors = driver.execute_script("""
-            return Array.from(document.querySelectorAll('a')).map(a => ({
-                href: a.href || '',
-                text: (a.innerText || a.textContent || '').trim()
-            }));
-        """)
-        for item in anchors:
-            add_candidate(item.get("text", ""), item.get("href", ""))
-    except Exception:
-        pass
+        for value in obj.values():
+            found = _find_luxor_json_price(value)
+            if found is not None:
+                return found
 
-    try:
-        for a in driver.find_elements(By.TAG_NAME, "a"):
-            try:
-                add_candidate(a.text.strip(), a.get_attribute("href"))
-            except Exception:
-                pass
-    except Exception:
-        pass
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_luxor_json_price(value)
+            if found is not None:
+                return found
 
-    try:
-        html = driver.page_source
-        variants = [
-            html,
-            html.replace("\\/", "/"),
-            html.replace("\\u002F", "/").replace("\\/", "/"),
-            html.replace("&amp;", "&").replace("\\/", "/"),
-        ]
-        patterns = [
-            r'https?://(?:www\.)?luxor\.cz/v/[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+',
-            r'(?<![A-Za-z0-9])(/v/[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+)',
-        ]
-        for h in variants:
-            for pattern in patterns:
-                for href in re.findall(pattern, h, flags=re.I):
-                    add_candidate("", href)
-    except Exception:
-        pass
-
-    # Pojistka pro ETB, které Luxor aktuálně nabízí na samostatných stránkách.
-    for href in LUXOR_KNOWN_ETB_URLS:
-        add_candidate("", href)
-
-    verified = []
-    for name, href in result:
-        try:
-            driver.get(href)
-            time.sleep(0.8)
-            try:
-                h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
-            except Exception:
-                h1 = ""
-            if "elite trainer box" in h1.lower():
-                verified.append((h1, href))
-            elif "elite-trainer-box" in href.lower():
-                verified.append((name, href))
-        except Exception:
-            if "elite-trainer-box" in href.lower():
-                verified.append((name, href))
-
-    unique, seen_urls = [], set()
-    for name, href in verified:
-        if href not in seen_urls:
-            seen_urls.add(href)
-            unique.append((name, href))
-    return unique
+    return None
 
 def luxor_check(driver, name, url):
     driver.get(url)
-    time.sleep(1.2)
+    time.sleep(1.5)
+
     text = safe_text(driver)
     t = text.lower()
-
-    # Luxor: nepoužívat obecný price_from_text jako první volbu.
-    # U cen typu 3 399 Kč / 3399 Kč nesmí parser vrátit jen 339.
     price = None
 
-    # 1) strukturovaná meta cena
+    # 1) JSON-LD Product/Offer – preferovaná metoda.
     try:
-        meta = driver.find_elements(By.CSS_SELECTOR, "meta[itemprop='price']")
-        for el in meta:
-            raw = (el.get_attribute("content") or "").strip()
-            m = re.search(r"(?<!\d)(\d{3,5})(?:[.,](\d{1,2}))?(?!\d)", raw)
-            if m:
-                price = int(m.group(1))
+        scripts = driver.find_elements(By.CSS_SELECTOR, "script[type='application/ld+json']")
+        for script in scripts:
+            raw = script.get_attribute("textContent") or ""
+            if not raw.strip():
+                continue
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            price = _find_luxor_json_price(data)
+            if price is not None:
                 break
     except Exception:
         pass
 
-    # 2) text stránky – bereme celé částky s Kč, včetně mezer jako 3 399 Kč.
+    # 2) Meta Product price.
     if price is None:
-        price_patterns = [
-            r"(?<!\d)(\d{1,2}(?:[\s\u00A0]\d{3})+)(?:[.,]\d{1,2})?\s*Kč",
-            r"(?<!\d)(\d{3,5})(?:[.,]\d{1,2})?\s*Kč",
-        ]
-        for pattern in price_patterns:
-            matches = re.findall(pattern, text, flags=re.I)
-            if matches:
-                raw = matches[0].replace(" ", "").replace("\u00a0", "")
-                try:
-                    price = int(re.sub(r"[^0-9]", "", raw))
+        try:
+            for el in driver.find_elements(By.CSS_SELECTOR, "meta[itemprop='price']"):
+                raw = (el.get_attribute("content") or "").strip()
+                if re.fullmatch(r"\d+(?:[.,]\d+)?", raw):
+                    price = int(round(float(raw.replace(",", "."))))
                     break
-                except Exception:
-                    pass
+        except Exception:
+            pass
 
-    # 3) HTML jako poslední záloha
+    # 3) Viditelná cena na produktové stránce.
+    # Hledáme celý údaj s Kč, nikdy ne první tři číslice z větší ceny.
     if price is None:
-        price = price_from_html(driver)
+        try:
+            candidates = driver.execute_script("""
+                return Array.from(document.querySelectorAll('*'))
+                  .map(e => (e.innerText || '').trim())
+                  .filter(t => /^\\d{1,2}(?:[ .]\\d{3})\\s*Kč$/.test(t)
+                            || /^\\d{3,5}\\s*Kč$/.test(t));
+            """)
+            parsed = []
+            for raw in candidates or []:
+                value = int(re.sub(r"[^0-9]", "", raw))
+                if 100 <= value <= 99999:
+                    parsed.append(value)
+
+            # Na detailu produktu bývá hlavní cena jednou z těchto hodnot.
+            # Preferujeme cenu <= 9999 a nejčastější hodnotu.
+            if parsed:
+                from collections import Counter
+                price = Counter(parsed).most_common(1)[0][0]
+        except Exception:
+            pass
 
     bad = [
         "není skladem", "neni skladem",
@@ -1016,7 +982,9 @@ def luxor_check(driver, name, url):
         return price, False
 
     good = ["skladem", "do košíku", "do kosiku", "koupit", "rezervovat"]
-    return price, any(x in t for x in good)
+    available = any(x in t for x in good)
+    return price, available
+
 
 # ---------- KNIHY DOBROVSKÝ ----------
 def knihy_dobrovsky_find(driver):
