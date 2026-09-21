@@ -324,33 +324,49 @@ def smarty_find(driver):
             pass
 
     # --- 3) Přímé známé produktové URL ---
-    # Tyto produkty jsou na Smarty ověřené; přidáváme je i tehdy,
-    # když je kategorie nebo interní vyhledávání zrovna nezobrazí.
-    direct_urls = [
-        "https://www.smarty.cz/Pokemon-TCG-ME01-Mega-Evolution-Elite-Trainer-Box-4p244516",
-        "https://www.smarty.cz/Pokemon-TCG-SV8-5-Prismatic-Evolutions-Elite-Trainer-Box-4p207320?type=popis",
+    # Tyto produkty jsou na Smarty ověřené. Přidáváme je natvrdo, aby je
+    # hlídač sledoval i tehdy, když se nezobrazí v kategorii/vyhledávání.
+    direct_products = [
+        (
+            "Pokémon TCG: ME01 - Mega Evolution Elite Trainer Box",
+            "https://www.smarty.cz/Pokemon-TCG-ME01-Mega-Evolution-Elite-Trainer-Box-4p244516",
+        ),
+        (
+            "Pokémon TCG: SV8.5 Prismatic Evolutions - Elite Trainer Box",
+            "https://www.smarty.cz/Pokemon-TCG-SV8-5-Prismatic-Evolutions-Elite-Trainer-Box-4p207320",
+        ),
     ]
 
-    for href in direct_urls:
+    for known_name, href in direct_products:
         href = normalize_url(href)
         if href not in seen:
             seen.add(href)
-            candidates.append(("", href))
+            candidates.append((known_name, href))
 
     # --- 4) Ověření skutečné produktové stránky ---
     verified = []
     seen_urls = set()
+    known_direct = {normalize_url(u): n for n, u in direct_products}
 
     for old_name, href in candidates:
         if href in seen_urls:
             continue
         seen_urls.add(href)
 
+        # U ověřených přímých URL nemusíme spoléhat na text odkazu/H1.
+        if href in known_direct:
+            verified.append((known_direct[href], href))
+            continue
+
         try:
             driver.get(href)
             time.sleep(0.7)
             h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
-            if "elite trainer box" in h1.lower():
+            # Vynecháme generické navigační odkazy typu jen "Elite Trainer Box".
+            if (
+                "elite trainer box" in h1.lower()
+                and h1.lower().strip() != "elite trainer box"
+            ):
                 verified.append((h1, href))
         except Exception:
             pass
@@ -362,20 +378,34 @@ def smarty_check(driver, name, url):
     time.sleep(1.2)
     text = safe_text(driver)
 
-    price = price_from_element(driver, [
-        ".price-final",
-        "[class*='price-final']",
-        "[class*='product-price']",
-    ])
+    # Smarty zobrazuje zákaznickou cenu a pod ní cenu bez DPH.
+    # Chceme cenu včetně DPH, tedy částku před textem "bez DPH".
+    price = None
+    try:
+        m = re.search(
+            r"(\d[\d\s\xa0]*)\s*Kč(?!\s*bez\s*DPH)",
+            text,
+            re.I
+        )
+        if m:
+            n = int(re.sub(r"\s+", "", m.group(1)))
+            if 300 <= n <= 100000:
+                price = n
+    except Exception:
+        pass
+
+    if price is None:
+        price = price_from_element(driver, [
+            ".price-final",
+            "[class*='price-final']",
+            "[class*='product-price']",
+        ])
+
     if price is None:
         price = price_from_text(text)
 
     t = text.lower()
-    good = [
-        "skladem celkem",
-        "skladem na prodejně",
-        "skladem na prodejne",
-    ]
+
     bad = [
         "připravujeme",
         "pripravujeme",
@@ -386,11 +416,19 @@ def smarty_check(driver, name, url):
         "expedice bude upřesněna",
         "expedice bude upresnena",
     ]
+
+    # Bereme i reálnou dostupnost na kamenné prodejně jako naskladnění.
+    good = [
+        "skladem celkem",
+        "skladem na prodejně",
+        "skladem na prodejne",
+        "dostupné na prodejně",
+        "dostupne na prodejne",
+    ]
+
     available = any(x in t for x in good) and not any(x in t for x in bad)
     return price, available
 
-
-# ---------- POKEMON4U ----------
 def pokemon4u_find(driver):
     driver.get(STORES["POKEMON4U.CZ"])
     time.sleep(2)
