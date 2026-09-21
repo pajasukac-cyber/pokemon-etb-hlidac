@@ -1,4 +1,4 @@
-name: Xzone ETB Hlídač
+name: Alza ETB Hlídač
 
 on:
   schedule:
@@ -23,17 +23,17 @@ jobs:
 
       - name: Instalace knihoven
         run: |
-          pip install requests selenium
+          pip install requests
 
-      - name: Spuštění Xzone hlídače
+      - name: Spuštění Alza hlídače
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
-        run: python alza_xzone_hlidac.py
+        run: python alza_hlidac.py
 
       - name: Uložení stavu
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state_alza_xzone.json
-          git diff --cached --quiet || (git commit -m "Aktualizace stavu Xzone hlídače" && git push)
+          git add state_alza.json
+          git diff --cached --quiet || (git commit -m "Aktualizace stavu Alza hlídače" && git push)
