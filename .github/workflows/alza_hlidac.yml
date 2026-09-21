@@ -1,0 +1,39 @@
+name: Xzone ETB Hlídač
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Stažení projektu
+        uses: actions/checkout@v4
+
+      - name: Nastavení Pythonu
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalace knihoven
+        run: |
+          pip install requests selenium
+
+      - name: Spuštění Xzone hlídače
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+        run: python alza_xzone_hlidac.py
+
+      - name: Uložení stavu
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state_alza_xzone.json
+          git diff --cached --quiet || (git commit -m "Aktualizace stavu Xzone hlídače" && git push)
