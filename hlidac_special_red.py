@@ -1336,6 +1336,9 @@ def check_store(driver, shop, state):
         if isinstance(product, dict):
             name = product.get("name", "")
             product_url = product.get("url", url)
+        elif isinstance(product, (tuple, list)) and len(product) >= 2:
+            name = str(product[0])
+            product_url = str(product[1])
         else:
             name = str(product)
             product_url = url
