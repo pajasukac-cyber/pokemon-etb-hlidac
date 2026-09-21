@@ -109,11 +109,69 @@ def xzone_find(driver):
 
     return result
 
-def xzone_check(driver,name,url):
-    driver.get(url); time.sleep(.8); text=safe_text(driver); low=text.lower(); price=parse_price(text)
-    if any(x in low for x in ["není skladem","neni skladem","vyprodáno","vyprodano","momentálně nedostupné","momentálně nedostupne","produkt je vyprodán","produkt je vyprodany"]):
-        return price,False
-    return price,any(x in low for x in ["do košíku","do kosiku","objednat","koupit","skladem","lze objednat"])
+def xzone_check(driver, name, url):
+    driver.get(url)
+    time.sleep(1.0)
+
+    text = safe_text(driver)
+    low = text.lower()
+
+    # Xzone shows the real product price as e.g. "1 990 Kč".
+    # Do not use generic 3-digit numbers such as product codes or credits.
+    prices = []
+    for m in re.finditer(
+        r'(?<!\d)(\d{1,2}(?:[\s\u00a0]\d{3})|\d{3,5})\s*Kč',
+        text,
+        re.I
+    ):
+        raw = m.group(1).replace(" ", "").replace("\u00a0", "")
+        try:
+            prices.append(int(raw))
+        except Exception:
+            pass
+
+    price = None
+    if prices:
+        realistic = [p for p in prices if 300 <= p <= 100000]
+        if realistic:
+            price = realistic[0]
+
+    # Fallback: structured product price.
+    if price is None:
+        for selector in [
+            "meta[itemprop='price']",
+            "[itemprop='price']",
+            "meta[property='product:price:amount']",
+        ]:
+            try:
+                for el in driver.find_elements(By.CSS_SELECTOR, selector):
+                    raw = el.get_attribute("content") or el.text
+                    m = re.search(r'\d+(?:[.,]\d+)?', raw or "")
+                    if m:
+                        p = float(m.group(0).replace(",", "."))
+                        if p >= 300:
+                            price = int(p)
+                            break
+                if price is not None:
+                    break
+            except Exception:
+                pass
+
+    unavailable = any(x in low for x in [
+        "není skladem", "neni skladem",
+        "vyprodáno", "vyprodano",
+        "momentálně nedostupné", "momentalne nedostupne",
+        "nedostupné", "nedostupne",
+    ])
+
+    available = False
+    if not unavailable:
+        available = any(x in low for x in [
+            "do košíku", "do kosiku",
+            "koupit", "objednat",
+        ])
+
+    return price, available
 
 def run_shop(driver,state,shop,finder,checker):
     print(f"\n===== {shop} ====="); links=finder(driver); print("Nalezeno ETB:",len(links)); changed=False
