@@ -36,4 +36,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state_special.json
-          git diff --cached --quiet || (git commit -m "Aktualizace speciálního hlídače" && git push)
+          git diff --cached --quiet || git commit -m "Aktualizace speciálního hlídače"
+          git pull --rebase origin main
+          git push
