@@ -56,38 +56,41 @@ def save_state(state):
     os.replace(tmp, STATE_FILE)
 
 
-def discord_alert(shop, product, price, url):
-    # Speciální alert: výrazný červený Discord embed.
+def discord_alert(shop, product, price, url, reason="první splnění", old_price=None):
+    if old_price is not None:
+        price_line = f"**{price:,} Kč**  (předtím {old_price:,} Kč)"
+        reason_line = "📉 Cena právě klesla."
+    else:
+        price_line = f"**{price:,} Kč**"
+        reason_line = "🟢 Cena je pod speciálním limitem."
+
     payload = {
         "content": "🔴 **🔥 SPECIÁLNÍ ETB ALERT 🔥**",
         "embeds": [{
             "title": f"🚨 {product}",
-            "url": url,
             "description": (
-                f"🏪 **Obchod:** {shop}\n"
-                f"💰 **Cena:** **{price:,} Kč**\n"
-                f"🎯 **Speciální limit:** **3 500 Kč**\n\n"
-                "🔴 **SKLADEM — SPECIÁLNÍ HLÍDÁNÍ**"
-            ).replace(",", " "),
-            "color": 16711680,
-            "footer": {"text": "Pokémon ETB – speciální hlídač"},
+                f"**Obchod:** {shop}\n"
+                f"**Cena:** {price_line}\n"
+                f"**Limit:** 3 500 Kč\n"
+                f"{reason_line}\n\n"
+                f"[Otevřít produkt]({url})"
+            ),
+            "color": 16711680
         }]
     }
 
-    r = requests.post(
-        f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
-        headers={
-            "Authorization": f"Bot {TOKEN}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=20,
-    )
-    print("Discord:", r.status_code)
-    if r.ok:
-        print("✅ Speciální upozornění odesláno.")
-    else:
-        print("❌ Discord chyba:", r.text[:300])
+    try:
+        r = requests.post(
+            f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
+            headers={"Authorization": f"Bot {TOKEN}"},
+            json=payload,
+            timeout=20
+        )
+        print(f"📨 Discord: HTTP {r.status_code}")
+        if r.status_code >= 300:
+            print(r.text[:500])
+    except Exception as e:
+        print(f"❌ Discord chyba: {e}")
 
 def make_driver():
     options = Options()
@@ -1283,53 +1286,132 @@ def special_limit_for_product(name, url):
 
     return None, None
 
-def check_store(driver, shop, state):
+def special_match(name, url=""):
+    """Rozpozná pouze 4 požadované speciální ETB."""
+    t = normalize_product_text(f"{name} {url}")
+
+    # 1) Mega Lucario
+    if "mega lucario" in t and "elite trainer box" in t:
+        return 3500, "Mega Lucario – Elite Trainer Box"
+
+    # 2) Základní Mega Evolution ETB – bez konkrétního Pokémona
+    if "mega evolution" in t and "elite trainer box" in t:
+        specific = [
+            "lucario", "gardevoir", "venusaur", "charizard",
+            "blastoise", "greninja", "diancie", "marowak",
+            "altaria", "ampharos", "manectric", "kangaskhan",
+            "latias", "latios",
+        ]
+        if not any(p in t for p in specific):
+            return 3500, "Mega Evolution – Elite Trainer Box"
+
+    # 3) Prismatic Evolutions
+    if "prismatic evolutions" in t and "elite trainer box" in t:
+        return 3500, "Prismatic Evolutions – Elite Trainer Box"
+
+    # 4) Ascended Heroes
+    if "ascended heroes" in t and "elite trainer box" in t:
+        return 3500, "Ascended Heroes – Elite Trainer Box"
+
+    return None, None
+
+
+def check_store(shop, url, state, finder, checker):
     print(f"\n===== {shop} =====")
 
     try:
-        links = FINDERS[shop](driver)
+        products = finder(url)
     except Exception as e:
-        print("CHYBA PŘI HLEDÁNÍ:", e)
+        print(f"❌ Chyba při hledání: {e}")
         return False
 
-    print("Nalezeno ETB:", len(links))
+    print(f"Nalezeno ETB: {len(products)}")
     changed = False
 
-    for name, url in links:
+    for product in products:
+        if isinstance(product, dict):
+            name = product.get("name", "")
+            product_url = product.get("url", url)
+        else:
+            name = str(product)
+            product_url = url
+
+        special_limit, special_name = special_match(name, product_url)
+
+        if special_name:
+            print(f"⭐ SPECIÁLNĚ SLEDUJI: {name}")
+            print(f"   Rozpoznáno jako: {special_name} | Limit: {special_limit} Kč")
+        else:
+            print(f"   — mimo speciální seznam: {name}")
+            continue
+
         try:
-            limit, matched_set = special_limit_for_product(name, url)
-            if limit is None:
-                continue
+            price, available = checker(product_url)
+        except Exception as e:
+            print(f"   ❌ Chyba kontroly: {e}")
+            price, available = None, False
 
-            print(f"\n⭐ SPECIÁLNĚ SLEDUJI: {name}")
-            print(f"   Set: {matched_set} | Limit: {limit} Kč")
+        print(f"   Cena: {price}")
+        print(f"   Dostupnost: {available}")
 
-            price, available = CHECKERS[shop](driver, name, url)
-            print("Cena:", price)
-            print("Dostupnost:", available)
+        key = f"{shop}|{product_url}"
+        old = state.get(key, {})
 
-            key = f"{shop}|{url}"
-            qualifies = price is not None and price <= limit and available
-            previous = state.get(key, False)
+        # Kompatibilita se starším state_special.json.
+        if isinstance(old, bool):
+            old = {
+                "qualifies": old,
+                "last_alert_price": None
+            }
 
-            if qualifies:
-                print("🔴 SPECIÁLNÍ PODMÍNKY SPLNĚNY!")
-                if not previous:
-                    discord_alert(shop, name, price, url)
-                else:
-                    print("ℹ️ Speciální upozornění už bylo odesláno, neopakuji.")
+        qualifies = (
+            price is not None
+            and price <= special_limit
+            and available
+        )
+
+        last_alert_price = old.get("last_alert_price")
+
+        if qualifies:
+            if last_alert_price is None:
+                discord_alert(
+                    shop,
+                    special_name,
+                    price,
+                    product_url,
+                    reason="první splnění limitu"
+                )
+                state[key] = {
+                    "qualifies": True,
+                    "last_alert_price": price
+                }
+                changed = True
+            elif price < last_alert_price:
+                discord_alert(
+                    shop,
+                    special_name,
+                    price,
+                    product_url,
+                    reason="pokles ceny",
+                    old_price=last_alert_price
+                )
+                state[key] = {
+                    "qualifies": True,
+                    "last_alert_price": price
+                }
+                changed = True
             else:
-                print("Speciální podmínky nesplněny.")
-
-            if previous != qualifies:
-                state[key] = qualifies
+                print("   ℹ️ Cena neklesla – upozornění neopakuji.")
+        else:
+            print("   Podmínky nesplněny.")
+            if old.get("qualifies") or last_alert_price is not None:
+                state[key] = {
+                    "qualifies": False,
+                    "last_alert_price": None
+                }
                 changed = True
 
-        except Exception as e:
-            print("CHYBA PRODUKTU:", e)
-
     return changed
-
 
 def main():
     print("======================================")
