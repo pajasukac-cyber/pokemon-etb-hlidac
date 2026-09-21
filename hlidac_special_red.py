@@ -1316,11 +1316,15 @@ def special_match(name, url=""):
     return None, None
 
 
-def check_store(shop, url, state, finder, checker):
+def check_store(driver, shop, state):
+    url = STORES[shop]
+    finder = FINDERS[shop]
+    checker = CHECKERS[shop]
+
     print(f"\n===== {shop} =====")
 
     try:
-        products = finder(url)
+        products = finder(driver, url)
     except Exception as e:
         print(f"❌ Chyba při hledání: {e}")
         return False
@@ -1346,7 +1350,7 @@ def check_store(shop, url, state, finder, checker):
             continue
 
         try:
-            price, available = checker(product_url)
+            price, available = checker(driver, product_url)
         except Exception as e:
             print(f"   ❌ Chyba kontroly: {e}")
             price, available = None, False
