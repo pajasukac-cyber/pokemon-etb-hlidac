@@ -23,7 +23,8 @@ jobs:
 
       - name: Instalace knihoven
         run: |
-          pip install requests
+          pip install requests playwright
+          playwright install --with-deps chromium
 
       - name: Spuštění Alza hlídače
         env:
