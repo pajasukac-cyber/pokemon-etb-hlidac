@@ -1266,11 +1266,18 @@ def special_limit_for_product(name, url):
     if "ascended heroes" in t:
         return 3500, "Ascended Heroes – Elite Trainer Box"
 
-    # Základní Mega Evolution ETB. Bereme různé varianty zápisu názvu.
-    if "mega evolution" in t and (
-        "elite trainer box" in t
-        or "elite-trainer-box" in t
-        or re.search(r"\betb\b", t)
+    # Základní Mega Evolution ETB:
+    # bereme jen název, který skutečně obsahuje "Mega Evolution Elite Trainer Box"
+    # bez dalšího označení Pokémona. Tím ignorujeme např. Lucario/Gardevoir.
+    name_t = normalize_product_text(name)
+    if (
+        re.search(r"\bmega evolution elite trainer box\b", name_t)
+        and not any(p in name_t for p in [
+            "lucario", "gardevoir", "venusaur", "charizard",
+            "blastoise", "greninja", "diancie", "marowak",
+            "altaria", "ampharos", "manectric", "kangaskhan",
+            "latias", "latios", "lucario ex", "gardevoir ex",
+        ])
     ):
         return 3500, "Mega Evolution – Elite Trainer Box"
 
