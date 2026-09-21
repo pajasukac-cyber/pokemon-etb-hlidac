@@ -77,49 +77,37 @@ def alza_check(driver,name,url):
     return price,any(x in low for x in ["skladem","do košíku","do kosiku","koupit","objednat"])
 
 def xzone_find(driver):
-    driver.get(XZONE_URL)
-    time.sleep(3)
+    # Xzone category page is unreliable in GitHub Actions.
+    # Use known direct ETB product URLs instead.
+    urls = [
+        "https://www.xzone.cz/karetni-hra-pokemon-tcg-mega-evolution-elite-trainer-box-mega-lucario",
+        "https://www.xzone.cz/karetni-hra-pokemon-tcg-scarlet-violet-black-bolt-elite-trainer-box",
+        "https://www.xzone.cz/karetni-hra-pokemon-tcg-celebrations-elite-trainer-box",
+        "https://www.xzone.cz/karetni-hra-pokemon-tcg-shining-fates-elite-trainer-box",
+        "https://www.xzone.cz/karetni-hra-pokemon-tcg-journey-together-elite-trainer-box",
+        "https://www.xzone.cz/karetni-hra-pokemon-tcg-champions-path-elite-trainer-box",
+        "https://www.xzone.cz/karetni-hra-pokemon-tcg-stellar-crown-elite-trainer-box",
+        "https://www.xzone.cz/karetni-hra-pokemon-tcg-obsidian-flames-elite-trainer-box",
+        "https://www.xzone.cz/karetni-hra-pokemon-tcg-crown-zenith-elite-trainer-box",
+        "https://www.xzone.cz/karetni-hra-pokemon-tcg-ascended-heroes-elite-trainer-box",
+    ]
+
     result = []
-    seen = set()
-
-    def add(href, name=""):
-        href = normalize_url(href)
-        low = href.lower()
-        # Pouze skutečné produktové stránky. Kategorie / tracking odkazy ignorujeme.
-        if not href or href in seen:
-            return
-        if "xzone.cz/" not in low:
-            return
-        if "elite-trainer-box" not in low:
-            return
-        if "/pokemon-tcg-elite-trainer-boxy" in low:
-            return
-        if "/track.php" in low:
-            return
-        if "/karetni-hra-pokemon-tcg-" not in low:
-            return
-
-        seen.add(href)
-        result.append((name.strip() or href.rsplit("/",1)[-1], href))
-
-    for a in driver.find_elements(By.TAG_NAME, "a"):
+    for url in urls:
         try:
-            add(a.get_attribute("href"), a.text)
+            driver.get(url)
+            time.sleep(0.8)
+            try:
+                name = driver.find_element(By.TAG_NAME, "h1").text.strip()
+            except Exception:
+                name = url.rstrip("/").split("/")[-1]
+
+            if "elite trainer box" in (name + " " + url).lower():
+                result.append((name, url))
         except Exception:
             pass
 
-    try:
-        html = driver.page_source
-        for href in re.findall(
-            r'https?://(?:www\.)?xzone\.cz/karetni-hra-pokemon-tcg-[^"\'>\s]+elite-trainer-box[^"\'>\s]*',
-            html, flags=re.I
-        ):
-            add(href)
-    except Exception:
-        pass
-
     return result
-
 
 def xzone_check(driver,name,url):
     driver.get(url); time.sleep(.8); text=safe_text(driver); low=text.lower(); price=parse_price(text)
