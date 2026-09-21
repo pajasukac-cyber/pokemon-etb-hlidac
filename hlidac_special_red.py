@@ -64,9 +64,9 @@ def discord_alert(shop, product, price, url):
             "title": f"🚨 {product}",
             "url": url,
             "description": (
-                f"🏪 **Obchod:** {shop}\\n"
-                f"💰 **Cena:** **{price:,} Kč**\\n"
-                f"🎯 **Speciální limit:** **3 500 Kč**\\n\\n"
+                f"🏪 **Obchod:** {shop}\n"
+                f"💰 **Cena:** **{price:,} Kč**\n"
+                f"🎯 **Speciální limit:** **3 500 Kč**\\n\n"
                 "🔴 **SKLADEM — SPECIÁLNÍ HLÍDÁNÍ**"
             ).replace(",", " "),
             "color": 16711680,
@@ -1344,11 +1344,11 @@ def main():
         for shop in STORES:
             changed = check_store(driver, shop, state) or changed
 
+        save_state(state)
         if changed:
-            save_state(state)
             print("✅ Stav uložen do state_special.json")
         else:
-            print("ℹ️ Stav se nezměnil.")
+            print("ℹ️ Stav se nezměnil, ale state_special.json byl uložen.")
 
     finally:
         try:
