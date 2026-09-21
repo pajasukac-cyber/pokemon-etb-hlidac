@@ -53,26 +53,44 @@ def alza_find():
     seen = set()
 
     for source in ALZA_DISCOVERY_URLS:
+        print()
         print("Hledám přes:", source)
         content = jina_get(source)
+
         if not content:
+            print("⚠️ Žádná data z Jina.")
             continue
 
-        candidates = []
+        print("Jina vrátila znaků:", len(content))
 
-        for m in re.finditer(
-            r"\[([^\]]*Elite Trainer Box[^\]]*)\]\((https?://www\.alza\.cz/[^)\s]+)\)",
-            content,
-            re.I,
-        ):
-            candidates.append((m.group(1).strip(), m.group(2)))
+        # Nejdřív diagnostika: ukaž řádky, kde se vůbec vyskytuje
+        # "Elite Trainer". Tím zjistíme skutečný formát odpovědi Alzy.
+        matches = []
+        for line in content.splitlines():
+            if "elite trainer" in line.lower() or "elite-trainer" in line.lower():
+                matches.append(line.strip())
 
-        for href in re.findall(
-            r"https?://www\.alza\.cz/[^)\s\"<>]+",
+        print("Řádky s Elite Trainer:", len(matches))
+        for line in matches[:12]:
+            print("DEBUG ETB:", line[:500])
+
+        # Hledej všechny alza.cz odkazy a až potom filtruj.
+        # Neomezujeme se na /hracky/, protože Alza může mít URL jinak.
+        all_urls = re.findall(
+            r'https?://(?:www\.)?alza\.cz/[^)\s"<>]+',
             content,
-            re.I,
-        ):
-            candidates.append(("", href))
+            flags=re.I,
+        )
+
+        # Jina Markdown odkazy: vezmeme i název produktu.
+        markdown_links = re.findall(
+            r'\[([^\]]+)\]\((https?://(?:www\.)?alza\.cz/[^)\s]+)\)',
+            content,
+            flags=re.I,
+        )
+
+        candidates = [(name.strip(), href) for name, href in markdown_links]
+        candidates += [("", href) for href in all_urls]
 
         for name, href in candidates:
             href = href.replace("&amp;", "&").rstrip("/")
@@ -80,18 +98,23 @@ def alza_find():
 
             if href in seen:
                 continue
+
             if "elite-trainer-box" not in combined and "elite trainer box" not in combined:
                 continue
+
             if "alza.cz" not in href.lower():
                 continue
+
             if "/search" in href.lower():
                 continue
 
             seen.add(href)
             result.append((name or href.rsplit("/", 1)[-1], href))
 
-    return result
+    print()
+    print("Celkem kandidátů ETB:", len(result))
 
+    return result
 
 def alza_check(name, url):
     content = jina_get(url)
