@@ -1,43 +1,213 @@
-name: Alza ETB Hlídač
+import os
+import re
+import json
+import requests
 
-on:
-  schedule:
-    - cron: "*/5 * * * *"
-  workflow_dispatch:
+MAX_PRICE = 2500
 
-permissions:
-  contents: write
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+DISCORD_CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "")
 
-jobs:
-  check:
-    runs-on: ubuntu-latest
+ALZA_DISCOVERY_URLS = [
+    "https://www.alza.cz/the-pokemon-company/v3460.htm",
+    "https://www.alza.cz/hracky/pokemon-booster-boxy-a-specialni-boxy/18903046.htm",
+    "https://www.alza.cz/search.htm?exps=elite%20trainer%20box",
+]
 
-    steps:
-      - name: Stažení projektu
-        uses: actions/checkout@v4
+STATE_FILE = "state_alza.json"
 
-      - name: Nastavení Pythonu
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
-      - name: Instalace knihoven
-        run: |
-          pip install requests
+def jina_get(url):
+    try:
+        r = requests.get(
+            "https://r.jina.ai/" + url,
+            timeout=30,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "text/plain"},
+        )
+        if r.status_code == 200 and len(r.text) > 200:
+            return r.text
+        print("Jina HTTP:", r.status_code, url)
+    except Exception as e:
+        print("Jina chyba:", e)
+    return ""
 
-      - name: Spuštění Alza hlídače
-        env:
-          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
-        run: python alza_hlidac.py
 
-      - name: Uložení stavu
-        run: |
-          if [ -f state_alza.json ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add state_alza.json
-            git diff --cached --quiet || (git commit -m "Aktualizace stavu Alza hlídače" && git push)
-          else
-            echo "state_alza.json zatím neexistuje - není co ukládat."
-          fi
+def parse_price(text):
+    for m in re.finditer(
+        r"(?<!\d)(\d{1,2}(?:[\s\u00a0]\d{3})|\d{3,5})\s*(?:,-\s*)?(?:Kč|CZK)",
+        text,
+        re.I,
+    ):
+        raw = m.group(1).replace(" ", "").replace("\u00a0", "")
+        try:
+            p = int(raw)
+            if 300 <= p <= 100000:
+                return p
+        except Exception:
+            pass
+    return None
+
+
+def alza_find():
+    result = []
+    seen = set()
+
+    for source in ALZA_DISCOVERY_URLS:
+        print("Hledám přes:", source)
+        content = jina_get(source)
+        if not content:
+            continue
+
+        candidates = []
+
+        for m in re.finditer(
+            r"\[([^\]]*Elite Trainer Box[^\]]*)\]\((https?://www\.alza\.cz/[^)\s]+)\)",
+            content,
+            re.I,
+        ):
+            candidates.append((m.group(1).strip(), m.group(2)))
+
+        for href in re.findall(
+            r"https?://www\.alza\.cz/[^)\s\"<>]+",
+            content,
+            re.I,
+        ):
+            candidates.append(("", href))
+
+        for name, href in candidates:
+            href = href.replace("&amp;", "&").rstrip("/")
+            combined = (name + " " + href).lower()
+
+            if href in seen:
+                continue
+            if "elite-trainer-box" not in combined and "elite trainer box" not in combined:
+                continue
+            if "alza.cz" not in href.lower():
+                continue
+            if "/search" in href.lower():
+                continue
+
+            seen.add(href)
+            result.append((name or href.rsplit("/", 1)[-1], href))
+
+    return result
+
+
+def alza_check(name, url):
+    content = jina_get(url)
+    if not content:
+        return None, False
+
+    low = content.lower()
+    price = parse_price(content)
+
+    unavailable = any(x in low for x in [
+        "momentálně nedostupné", "momentalne nedostupne",
+        "není skladem", "neni skladem",
+        "vyprodáno", "vyprodano",
+        "hlídat dostupnost", "hlidat dostupnost",
+    ])
+
+    available = False
+    if not unavailable:
+        available = any(x in low for x in [
+            "do košíku", "do kosiku", "koupit", "skladem",
+        ])
+
+    return price, available
+
+
+def discord_alert(name, price, url):
+    if not DISCORD_TOKEN or not DISCORD_CHANNEL_ID:
+        print("Discord secrets nejsou nastavené.")
+        return
+
+    api = f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL_ID}/messages"
+    payload = {
+        "content": (
+            "🚨 **ALZA ETB ALERT**\n"
+            f"**{name}**\n"
+            f"💰 **{price} Kč**\n"
+            f"🔗 {url}"
+        )
+    }
+
+    try:
+        r = requests.post(
+            api,
+            headers={
+                "Authorization": f"Bot {DISCORD_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=20,
+        )
+        print("Discord:", r.status_code)
+    except Exception as e:
+        print("Discord chyba:", e)
+
+
+def load_state():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def main():
+    print("=" * 55)
+    print("       ALZA ETB HLÍDAČ - SAMOSTATNĚ")
+    print("=" * 55)
+    print(f"Limit: {MAX_PRICE} Kč")
+    print("=" * 55)
+
+    state = load_state()
+    products = alza_find()
+
+    print()
+    print("===== ALZA.CZ =====")
+    print("Nalezeno ETB:", len(products))
+
+    changed = False
+
+    for name, url in products:
+        print()
+        print("Kontroluji:", name)
+
+        price, available = alza_check(name, url)
+        print("Cena:", price)
+        print("Dostupnost:", available)
+
+        qualifies = price is not None and price <= MAX_PRICE and available
+
+        if qualifies:
+            print("🚨 PODMÍNKY SPLNĚNY!")
+            if not state.get(url, False):
+                discord_alert(name, price, url)
+                print("✅ Upozornění odesláno.")
+            else:
+                print("ℹ️ Upozornění už bylo odesláno, neopakuji.")
+        else:
+            print("Podmínky nesplněny.")
+
+        if state.get(url, False) != qualifies:
+            state[url] = qualifies
+            changed = True
+
+    if changed:
+        save_state(state)
+        print()
+        print("💾 Stav uložen.")
+    else:
+        print()
+        print("ℹ️ Stav se nezměnil.")
+
+
+if __name__ == "__main__":
+    main()
