@@ -261,75 +261,101 @@ def explicit_stock(text):
 
 # ---------- SMARTY ----------
 def smarty_find(driver):
-    driver.get(STORES["SMARTY.CZ"])
-    time.sleep(3)
-
-    result = []
+    """
+    Smarty:
+    1) projde několik stran ETB kategorie,
+    2) navíc provede cílené interní hledání všech 4 speciálních ETB.
+    Tím se produkt neztratí jen proto, že momentálně není na první stránce.
+    """
+    category = STORES["SMARTY.CZ"]
+    candidates = []
     seen = set()
 
-    # 1) Běžné odkazy v DOM.
-    for a in driver.find_elements(By.TAG_NAME, "a"):
+    def collect_from_current_page():
+        for a in driver.find_elements(By.TAG_NAME, "a"):
+            try:
+                href = normalize_url(a.get_attribute("href"))
+                name = a.text.strip()
+                if not href or href in seen:
+                    continue
+
+                low = (href + " " + name).lower()
+                if "smarty.cz/" not in low:
+                    continue
+                if "elite-trainer-box" not in low and "elite trainer box" not in low:
+                    continue
+
+                # Kategorie / navigace, ne konkrétní produkt.
+                if low.rstrip("/") == category.rstrip("/").lower():
+                    continue
+                if "/vyhledavani" in low:
+                    continue
+
+                seen.add(href)
+                candidates.append((name, href))
+            except Exception:
+                pass
+
+    # --- 1) ETB kategorie, více stran ---
+    for page_num in range(1, 8):
         try:
-            href = normalize_url(a.get_attribute("href"))
-            name = a.text.strip()
-            low = href.lower()
-            if not href or href in seen:
-                continue
-            if "smarty.cz/" not in low or "elite-trainer-box" not in low:
-                continue
-            if "4c14603" in low:
-                continue
-            seen.add(href)
-            result.append((name, href))
+            page_url = category if page_num == 1 else f"{category}?pg={page_num}"
+            driver.get(page_url)
+            time.sleep(1.2)
+            collect_from_current_page()
         except Exception:
             pass
 
-    # 2) Záloha: produktové URL přímo z HTML. Funguje i když jsou
-    # produktové karty v headless Chromu bez textového <a> elementu.
-    try:
-        html = driver.page_source.replace("\\/", "/")
-        patterns = [
-            r"https?://www\\.smarty\\.cz/[^\"'<>\\s]+elite-trainer-box[^\"'<>\\s]*",
-            r"https?://smarty\\.cz/[^\"'<>\\s]+elite-trainer-box[^\"'<>\\s]*",
-        ]
-        for pattern in patterns:
-            for href in re.findall(pattern, html, flags=re.I):
-                href = normalize_url(href)
-                low = href.lower()
-                if not href or href in seen:
-                    continue
-                if "elite-trainer-box" not in low or "4c14603" in low:
-                    continue
-                seen.add(href)
-                result.append(("", href))
-    except Exception:
-        pass
+    # --- 2) Cílené interní vyhledávání ---
+    queries = [
+        "Mega Evolution 01 Elite Trainer Box",
+        "Mega Lucario Elite Trainer Box",
+        "Prismatic Evolutions Elite Trainer Box",
+        "Ascended Heroes Elite Trainer Box",
+    ]
 
-    # 3) Produktové URL ověříme přes H1; pokud H1 v headless režimu
-    # selže, ponecháme kandidáta — detail se následně kontroluje v smarty_check.
+    for query in queries:
+        try:
+            search_url = "https://www.smarty.cz/Vyhledavani?query=" + quote_plus(query)
+            driver.get(search_url)
+            time.sleep(1.5)
+            collect_from_current_page()
+        except Exception:
+            pass
+
+    # --- 3) Přímé známé produktové URL ---
+    # Tyto produkty jsou na Smarty ověřené; přidáváme je i tehdy,
+    # když je kategorie nebo interní vyhledávání zrovna nezobrazí.
+    direct_urls = [
+        "https://www.smarty.cz/Pokemon-TCG-ME01-Mega-Evolution-Elite-Trainer-Box-4p244516",
+        "https://www.smarty.cz/Pokemon-TCG-SV8-5-Prismatic-Evolutions-Elite-Trainer-Box-4p207320?type=popis",
+    ]
+
+    for href in direct_urls:
+        href = normalize_url(href)
+        if href not in seen:
+            seen.add(href)
+            candidates.append(("", href))
+
+    # --- 4) Ověření skutečné produktové stránky ---
     verified = []
-    for old_name, href in result:
+    seen_urls = set()
+
+    for old_name, href in candidates:
+        if href in seen_urls:
+            continue
+        seen_urls.add(href)
+
         try:
             driver.get(href)
-            time.sleep(1.0)
+            time.sleep(0.7)
             h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
             if "elite trainer box" in h1.lower():
                 verified.append((h1, href))
-            elif old_name and "elite trainer box" in old_name.lower():
-                verified.append((old_name, href))
         except Exception:
-            if old_name and "elite trainer box" in old_name.lower():
-                verified.append((old_name, href))
+            pass
 
-    # Bez duplicit.
-    unique = []
-    seen_urls = set()
-    for name, href in verified:
-        if href not in seen_urls:
-            seen_urls.add(href)
-            unique.append((name or "Pokémon Elite Trainer Box", href))
-    return unique
-
+    return verified
 
 def smarty_check(driver, name, url):
     driver.get(url)
@@ -1253,38 +1279,6 @@ def normalize_product_text(text):
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
-
-def special_limit_for_product(name, url):
-    """Vrátí limit pro jeden ze 4 vybraných ETB, jinak None."""
-    t = normalize_product_text(f"{name} {url}")
-
-    # Nejdřív konkrétnější názvy, aby Mega Lucario nespadlo do obecného
-    # Mega Evolution pravidla.
-    if "mega lucario" in t:
-        return 3500, "Mega Lucario – Elite Trainer Box"
-
-    if "prismatic evolutions" in t:
-        return 3500, "Prismatic Evolutions – Elite Trainer Box"
-
-    if "ascended heroes" in t:
-        return 3500, "Ascended Heroes – Elite Trainer Box"
-
-    # Základní Mega Evolution ETB:
-    # bereme jen název, který skutečně obsahuje "Mega Evolution Elite Trainer Box"
-    # bez dalšího označení Pokémona. Tím ignorujeme např. Lucario/Gardevoir.
-    name_t = normalize_product_text(name)
-    if (
-        re.search(r"\bmega evolution elite trainer box\b", name_t)
-        and not any(p in name_t for p in [
-            "lucario", "gardevoir", "venusaur", "charizard",
-            "blastoise", "greninja", "diancie", "marowak",
-            "altaria", "ampharos", "manectric", "kangaskhan",
-            "latias", "latios", "lucario ex", "gardevoir ex",
-        ])
-    ):
-        return 3500, "Mega Evolution – Elite Trainer Box"
-
-    return None, None
 
 def special_match(name, url=""):
     """Rozpozná pouze 4 požadované speciální ETB."""
