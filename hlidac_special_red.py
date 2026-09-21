@@ -375,36 +375,115 @@ def smarty_find(driver):
 
 def smarty_check(driver, name, url):
     driver.get(url)
-    time.sleep(1.2)
-    text = safe_text(driver)
+    time.sleep(1.5)
 
-    # Smarty zobrazuje zákaznickou cenu a pod ní cenu bez DPH.
-    # Chceme cenu včetně DPH, tedy částku před textem "bez DPH".
-    price = None
+    # Na Smarty se některé produktové údaje v headless Chrome nepromítnou
+    # spolehlivě do běžného textu. Proto čteme současně DOM i zdroj stránky.
     try:
-        m = re.search(
-            r"(\d[\d\s\xa0]*)\s*Kč(?!\s*bez\s*DPH)",
-            text,
-            re.I
-        )
-        if m:
-            n = int(re.sub(r"\s+", "", m.group(1)))
-            if 300 <= n <= 100000:
-                price = n
+        body_text = driver.execute_script("return document.body.innerText || '';")
+    except Exception:
+        body_text = safe_text(driver)
+
+    try:
+        html = driver.page_source or ""
+    except Exception:
+        html = ""
+
+    def parse_price(value_text):
+        vals = []
+        for raw in re.findall(r"(\d[\d\s\xa0]*)\s*Kč", value_text or "", re.I):
+            try:
+                n = int(re.sub(r"\s+", "", raw))
+                if 300 <= n <= 100000:
+                    vals.append(n)
+            except Exception:
+                pass
+        return min(vals) if vals else None
+
+    price = None
+
+    # 1) JSON-LD Product / Offer
+    try:
+        scripts = driver.find_elements(By.CSS_SELECTOR, "script[type='application/ld+json']")
+        for script in scripts:
+            raw = script.get_attribute("textContent") or ""
+            if not raw.strip():
+                continue
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+
+            stack = data if isinstance(data, list) else [data]
+            while stack:
+                item = stack.pop()
+                if not isinstance(item, dict):
+                    continue
+
+                if "@graph" in item and isinstance(item["@graph"], list):
+                    stack.extend(item["@graph"])
+
+                if "offers" in item:
+                    offers = item["offers"]
+                    offers_list = offers if isinstance(offers, list) else [offers]
+                    for offer in offers_list:
+                        if isinstance(offer, dict):
+                            raw_price = offer.get("price")
+                            if raw_price is not None:
+                                try:
+                                    n = int(round(float(str(raw_price).replace(",", "."))))
+                                    if 300 <= n <= 100000:
+                                        price = n
+                                        break
+                                except Exception:
+                                    pass
+                if price is not None:
+                    break
+            if price is not None:
+                break
     except Exception:
         pass
 
+    # 2) Meta itemprop=price
     if price is None:
-        price = price_from_element(driver, [
-            ".price-final",
-            "[class*='price-final']",
-            "[class*='product-price']",
-        ])
+        try:
+            for el in driver.find_elements(By.CSS_SELECTOR, "meta[itemprop='price']"):
+                raw = (el.get_attribute("content") or "").strip()
+                if re.fullmatch(r"\d+(?:[.,]\d+)?", raw):
+                    n = int(round(float(raw.replace(",", "."))))
+                    if 300 <= n <= 100000:
+                        price = n
+                        break
+        except Exception:
+            pass
+
+    # 3) HTML / DOM jako fallback.
+    # Smarty na produktové stránce uvádí zákaznickou cenu před "bez DPH".
+    if price is None:
+        for source in (body_text, html):
+            m = re.search(
+                r"(\d[\d\s\xa0]*)\s*Kč\s*(?!bez\s*DPH)",
+                source or "",
+                re.I
+            )
+            if m:
+                try:
+                    n = int(re.sub(r"\s+", "", m.group(1)))
+                    if 300 <= n <= 100000:
+                        price = n
+                        break
+                except Exception:
+                    pass
 
     if price is None:
-        price = price_from_text(text)
+        price = parse_price(body_text)
+    if price is None:
+        price = parse_price(html)
 
-    t = text.lower()
+    # Dostupnost posuzujeme pouze podle textů Smarty.
+    # "Dostupné na prodejně" znamená skutečný sklad na prodejně.
+    t = (body_text or "").lower()
+    h = (html or "").lower()
 
     bad = [
         "připravujeme",
@@ -415,18 +494,46 @@ def smarty_check(driver, name, url):
         "predobjednat",
         "expedice bude upřesněna",
         "expedice bude upresnena",
+        "neznámá dostupnost",
+        "neznamá dostupnost",
+        "neznama dostupnost",
     ]
 
-    # Bereme i reálnou dostupnost na kamenné prodejně jako naskladnění.
     good = [
         "skladem celkem",
+        "skladem eshop",
         "skladem na prodejně",
         "skladem na prodejne",
         "dostupné na prodejně",
         "dostupne na prodejne",
     ]
 
-    available = any(x in t for x in good) and not any(x in t for x in bad)
+    available = any(x in t for x in good)
+
+    # Některé texty mohou být schované v HTML atributu/skriptu.
+    if not available:
+        available = any(x in h for x in [
+            "skladem celkem",
+            "skladem eshop",
+            "skladem na prodejně",
+            "skladem na prodejne",
+            "dostupné na prodejně",
+            "dostupne na prodejne",
+        ])
+
+    if any(x in t for x in bad):
+        # "Dostupné na prodejně" má přednost před obecným textem
+        # o neznámé online dostupnosti.
+        if not any(x in t for x in [
+            "dostupné na prodejně",
+            "dostupne na prodejne",
+            "skladem na prodejně",
+            "skladem na prodejne",
+            "skladem eshop",
+            "skladem celkem",
+        ]):
+            available = False
+
     return price, available
 
 def pokemon4u_find(driver):
