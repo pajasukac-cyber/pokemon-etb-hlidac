@@ -66,7 +66,7 @@ def discord_alert(shop, product, price, url):
             "description": (
                 f"🏪 **Obchod:** {shop}\n"
                 f"💰 **Cena:** **{price:,} Kč**\n"
-                f"🎯 **Speciální limit:** **3 500 Kč**\\n\n"
+                f"🎯 **Speciální limit:** **3 500 Kč**\n\n"
                 "🔴 **SKLADEM — SPECIÁLNÍ HLÍDÁNÍ**"
             ).replace(",", " "),
             "color": 16711680,
@@ -1255,25 +1255,26 @@ def special_limit_for_product(name, url):
     """Vrátí limit pro jeden ze 4 vybraných ETB, jinak None."""
     t = normalize_product_text(f"{name} {url}")
 
-    # 1) Mega Lucario
-    if "mega lucario" in t and "elite trainer box" in t:
+    # Nejdřív konkrétnější názvy, aby Mega Lucario nespadlo do obecného
+    # Mega Evolution pravidla.
+    if "mega lucario" in t:
         return 3500, "Mega Lucario – Elite Trainer Box"
 
-    # 2) Prismatic Evolutions
-    if "prismatic evolutions" in t and "elite trainer box" in t:
+    if "prismatic evolutions" in t:
         return 3500, "Prismatic Evolutions – Elite Trainer Box"
 
-    # 3) Ascended Heroes
-    if "ascended heroes" in t and "elite trainer box" in t:
+    if "ascended heroes" in t:
         return 3500, "Ascended Heroes – Elite Trainer Box"
 
-    # 4) Základní Mega Evolution ETB. Musí být přímo Mega Evolution + ETB;
-    #    tím záměrně nebereme Phantasmal Flames / Perfect Order apod.
-    if re.search(r"\bmega evolution\s+elite trainer box\b", t):
+    # Základní Mega Evolution ETB. Bereme různé varianty zápisu názvu.
+    if "mega evolution" in t and (
+        "elite trainer box" in t
+        or "elite-trainer-box" in t
+        or re.search(r"\betb\b", t)
+    ):
         return 3500, "Mega Evolution – Elite Trainer Box"
 
     return None, None
-
 
 def check_store(driver, shop, state):
     print(f"\n===== {shop} =====")
