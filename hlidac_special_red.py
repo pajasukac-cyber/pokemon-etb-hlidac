@@ -1324,7 +1324,7 @@ def check_store(driver, shop, state):
     print(f"\n===== {shop} =====")
 
     try:
-        products = finder(driver, url)
+        products = finder(url)
     except Exception as e:
         print(f"❌ Chyba při hledání: {e}")
         return False
