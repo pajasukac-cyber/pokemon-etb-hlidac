@@ -1290,31 +1290,59 @@ def special_match(name, url=""):
     """Rozpozná pouze 4 požadované speciální ETB."""
     t = normalize_product_text(f"{name} {url}")
 
-    # 1) Mega Lucario
-    if "mega lucario" in t and "elite trainer box" in t:
+    # 1) Mega Lucario ETB.
+    # Některé obchody píší "Mega Lucario", jiné "Mega Evolutions ... Lucario".
+    if (
+        "elite trainer box" in t
+        and (
+            "mega lucario" in t
+            or ("mega evolution" in t and "lucario" in t)
+        )
+    ):
         return 3500, "Mega Lucario – Elite Trainer Box"
 
-    # 2) Základní Mega Evolution ETB – bez konkrétního Pokémona
-    if "mega evolution" in t and "elite trainer box" in t:
-        specific = [
-            "lucario", "gardevoir", "venusaur", "charizard",
-            "blastoise", "greninja", "diancie", "marowak",
-            "altaria", "ampharos", "manectric", "kangaskhan",
-            "latias", "latios",
+    # 2) Základní Mega Evolution 01 ETB.
+    # Důležité: obecné "Mega Evolution + ETB" nestačí, protože by chytalo
+    # Pitch Black, Perfect Order, Gardevoir apod.
+    if "elite trainer box" in t and (
+        "mega evolution 01" in t
+        or "mega evolutions 01" in t
+    ):
+        return 3500, "Mega Evolution 01 – Elite Trainer Box"
+
+    # Alternativní zápis názvu základního produktu bez čísla.
+    # Pouze pokud současně neobsahuje známé jiné Mega Evolution sety/pokémony.
+    if "elite trainer box" in t and "mega evolution" in t:
+        excluded = [
+            "perfect order",
+            "pitch black",
+            "gardevoir",
+            "lucario",
+            "venusaur",
+            "charizard",
+            "blastoise",
+            "greninja",
+            "diancie",
+            "marowak",
+            "altaria",
+            "ampharos",
+            "manectric",
+            "kangaskhan",
+            "latias",
+            "latios",
         ]
-        if not any(p in t for p in specific):
+        if not any(x in t for x in excluded):
             return 3500, "Mega Evolution – Elite Trainer Box"
 
-    # 3) Prismatic Evolutions
+    # 3) Prismatic Evolutions.
     if "prismatic evolutions" in t and "elite trainer box" in t:
         return 3500, "Prismatic Evolutions – Elite Trainer Box"
 
-    # 4) Ascended Heroes
+    # 4) Ascended Heroes.
     if "ascended heroes" in t and "elite trainer box" in t:
         return 3500, "Ascended Heroes – Elite Trainer Box"
 
     return None, None
-
 
 def check_store(driver, shop, state):
     url = STORES[shop]
