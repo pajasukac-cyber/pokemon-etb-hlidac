@@ -200,8 +200,11 @@ def main():
             state[url] = qualifies
             changed = True
 
+    # Vždy vytvoř stavový soubor, i když zatím nebylo nic nalezeno.
+    # Díky tomu workflow nespadne na "state_alza.json did not match any files".
+    save_state(state)
+
     if changed:
-        save_state(state)
         print()
         print("💾 Stav uložen.")
     else:
