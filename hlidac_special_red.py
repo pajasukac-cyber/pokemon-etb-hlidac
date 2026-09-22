@@ -1,4 +1,3 @@
-# SAMOSTATNÝ SPECIÁLNÍ HLÍDAČ – hlavní hlídač se tímto souborem nemění.
 import time
 import re
 import os
@@ -12,7 +11,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 
 
-SPECIAL_MAX_PRICE = 3500
+MAX_PRICE = 3500
 CHECK_EVERY = 300
 STATE_FILE = "state_special.json"
 
@@ -29,15 +28,6 @@ STORES = {
 
 TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "").strip()
-
-# Speciální ETB, která hlídáme samostatně. Všechny mají vlastní limit 3 500 Kč.
-# Ostatní ETB se tímto hlídačem vůbec nezabývají.
-SPECIAL_ETBS = {
-    "MEGA EVOLUTION - ELITE TRAINER BOX": 3500,
-    "MEGA LUCARIO - ELITE TRAINER BOX": 3500,
-    "PRISMATIC EVOLUTIONS - ELITE TRAINER BOX": 3500,
-    "ASCENDED HEROES - ELITE TRAINER BOX": 3500,
-}
 
 
 def load_state():
@@ -56,41 +46,38 @@ def save_state(state):
     os.replace(tmp, STATE_FILE)
 
 
-def discord_alert(shop, product, price, url, reason="první splnění", old_price=None):
-    if old_price is not None:
-        price_line = f"**{price:,} Kč**  (předtím {old_price:,} Kč)"
-        reason_line = "📉 Cena právě klesla."
-    else:
-        price_line = f"**{price:,} Kč**"
-        reason_line = "🟢 Cena je pod speciálním limitem."
-
+def discord_alert(shop, product, price, url, limit=MAX_PRICE, set_name=None):
+    title = set_name or product
     payload = {
         "content": "🔴 **🔥 SPECIÁLNÍ ETB ALERT 🔥**",
         "embeds": [{
-            "title": f"🚨 {product}",
+            "title": f"🚨 {title}",
             "description": (
                 f"**Obchod:** {shop}\n"
-                f"**Cena:** {price_line}\n"
-                f"**Limit:** 3 500 Kč\n"
-                f"{reason_line}\n\n"
-                f"[Otevřít produkt]({url})"
-            ),
-            "color": 16711680
+                f"**Cena:** **{price:,} Kč**\n"
+                f"**Limit:** {limit:,} Kč\n\n"
+                "🟢 **SKLADEM**"
+            ).replace(",", " "),
+            "url": url,
+            "color": 16711680,
         }]
     }
 
-    try:
-        r = requests.post(
-            f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
-            headers={"Authorization": f"Bot {TOKEN}"},
-            json=payload,
-            timeout=20
-        )
-        print(f"📨 Discord: HTTP {r.status_code}")
-        if r.status_code >= 300:
-            print(r.text[:500])
-    except Exception as e:
-        print(f"❌ Discord chyba: {e}")
+    r = requests.post(
+        f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
+        headers={
+            "Authorization": f"Bot {TOKEN}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=20,
+    )
+    print("Discord:", r.status_code)
+    if r.ok:
+        print("✅ Speciální upozornění odesláno.")
+    else:
+        print("❌ Discord chyba:", r.text[:300])
+
 
 def make_driver():
     options = Options()
@@ -259,283 +246,223 @@ def explicit_stock(text):
     return any(x in t for x in positives)
 
 
-# ---------- SMARTY ----------
-def smarty_find(driver):
+
+# ---------- SPECIÁLNÍ ETB FILTR ----------
+def normalize_product_text(text):
+    t = (text or "").lower()
+    replacements = {
+        "–": "-",
+        "—": "-",
+        "−": "-",
+        "\xa0": " ",
+    }
+    for a, b in replacements.items():
+        t = t.replace(a, b)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def special_match(name, url=""):
     """
-    Smarty:
-    1) projde několik stran ETB kategorie,
-    2) navíc provede cílené interní hledání všech 4 speciálních ETB.
-    Tím se produkt neztratí jen proto, že momentálně není na první stránce.
+    Sledujeme POUZE 4 požadované ETB:
+      - Mega Evolution 01
+      - Mega Lucario
+      - Prismatic Evolutions
+      - Ascended Heroes
     """
-    category = STORES["SMARTY.CZ"]
-    candidates = []
-    seen = set()
+    t = normalize_product_text(f"{name} {url}")
 
-    def collect_from_current_page():
-        for a in driver.find_elements(By.TAG_NAME, "a"):
-            try:
-                href = normalize_url(a.get_attribute("href"))
-                name = a.text.strip()
-                if not href or href in seen:
-                    continue
+    if "elite trainer box" not in t:
+        return None, None
 
-                low = (href + " " + name).lower()
-                if "smarty.cz/" not in low:
-                    continue
-                if "elite-trainer-box" not in low and "elite trainer box" not in low:
-                    continue
+    # Mega Lucario
+    if "mega lucario" in t or ("mega evolution" in t and "lucario" in t):
+        return 3500, "Mega Lucario - Elite Trainer Box"
 
-                # Kategorie / navigace, ne konkrétní produkt.
-                if low.rstrip("/") == category.rstrip("/").lower():
-                    continue
-                if "/vyhledavani" in low:
-                    continue
+    # Základní Mega Evolution 01
+    if "mega evolution 01" in t or "mega evolutions 01" in t:
+        return 3500, "Mega Evolution 01 - Elite Trainer Box"
 
-                seen.add(href)
-                candidates.append((name, href))
-            except Exception:
-                pass
+    # Některé obchody mohou mít základní ETB bez čísla 01.
+    # Vyloučíme známé samostatné Mega Evolution produkty.
+    if "mega evolution" in t:
+        excluded = [
+            "perfect order", "pitch black", "gardevoir", "lucario",
+            "venusaur", "charizard", "blastoise", "greninja",
+            "diancie", "marowak", "altaria", "ampharos",
+            "manectric", "kangaskhan", "latias", "latios",
+        ]
+        if not any(x in t for x in excluded):
+            return 3500, "Mega Evolution - Elite Trainer Box"
 
-    # --- 1) ETB kategorie, více stran ---
-    for page_num in range(1, 8):
-        try:
-            page_url = category if page_num == 1 else f"{category}?pg={page_num}"
-            driver.get(page_url)
-            time.sleep(1.2)
-            collect_from_current_page()
-        except Exception:
-            pass
+    # Prismatic Evolutions
+    if "prismatic evolutions" in t:
+        return 3500, "Prismatic Evolutions - Elite Trainer Box"
 
-    # --- 2) Cílené interní vyhledávání ---
-    queries = [
-        "Mega Evolution 01 Elite Trainer Box",
-        "Mega Lucario Elite Trainer Box",
-        "Prismatic Evolutions Elite Trainer Box",
-        "Ascended Heroes Elite Trainer Box",
-    ]
+    # Ascended Heroes
+    if "ascended heroes" in t:
+        return 3500, "Ascended Heroes - Elite Trainer Box"
 
-    for query in queries:
-        try:
-            search_url = "https://www.smarty.cz/Vyhledavani?query=" + quote_plus(query)
-            driver.get(search_url)
-            time.sleep(1.5)
-            collect_from_current_page()
-        except Exception:
-            pass
+    return None, None
 
-    # --- 3) Přímé známé produktové URL ---
-    # Tyto produkty jsou na Smarty ověřené. Přidáváme je natvrdo, aby je
-    # hlídač sledoval i tehdy, když se nezobrazí v kategorii/vyhledávání.
-    direct_products = [
-        (
-            "Pokémon TCG: ME01 - Mega Evolution Elite Trainer Box",
-            "https://www.smarty.cz/Pokemon-TCG-ME01-Mega-Evolution-Elite-Trainer-Box-4p244516",
-        ),
-        (
-            "Pokémon TCG: SV8.5 Prismatic Evolutions - Elite Trainer Box",
-            "https://www.smarty.cz/Pokemon-TCG-SV8-5-Prismatic-Evolutions-Elite-Trainer-Box-4p207320",
-        ),
-    ]
 
-    for known_name, href in direct_products:
-        href = normalize_url(href)
-        if href not in seen:
-            seen.add(href)
-            candidates.append((known_name, href))
+def smarty_store_stock(driver):
+    """
+    Na Smarty samotné 'Dostupné na prodejně' nebereme jako sklad.
+    Pokusíme se otevřít přehled prodejen a hledáme skutečné kladné množství.
+    """
+    before = safe_text(driver)
 
-    # --- 4) Ověření skutečné produktové stránky ---
-    verified = []
-    seen_urls = set()
-    known_direct = {normalize_url(u): n for n, u in direct_products}
-
-    for old_name, href in candidates:
-        if href in seen_urls:
-            continue
-        seen_urls.add(href)
-
-        # U ověřených přímých URL nemusíme spoléhat na text odkazu/H1.
-        if href in known_direct:
-            verified.append((known_direct[href], href))
-            continue
-
-        try:
-            driver.get(href)
-            time.sleep(0.7)
-            h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
-            # Vynecháme generické navigační odkazy typu jen "Elite Trainer Box".
-            if (
-                "elite trainer box" in h1.lower()
-                and h1.lower().strip() != "elite trainer box"
-            ):
-                verified.append((h1, href))
-        except Exception:
-            pass
-
-    return verified
-
-def smarty_check(driver, name, url):
-    driver.get(url)
-    time.sleep(1.5)
-
-    # Na Smarty se některé produktové údaje v headless Chrome nepromítnou
-    # spolehlivě do běžného textu. Proto čteme současně DOM i zdroj stránky.
+    clicked = False
     try:
-        body_text = driver.execute_script("return document.body.innerText || '';")
-    except Exception:
-        body_text = safe_text(driver)
-
-    try:
-        html = driver.page_source or ""
-    except Exception:
-        html = ""
-
-    def parse_price(value_text):
-        vals = []
-        for raw in re.findall(r"(\d[\d\s\xa0]*)\s*Kč", value_text or "", re.I):
+        elems = driver.find_elements(
+            By.XPATH,
+            "//*[contains(normalize-space(.), 'Dostupné na prodejně')]"
+        )
+        for el in sorted(elems, key=lambda x: len((x.text or ""))):
             try:
-                n = int(re.sub(r"\s+", "", raw))
-                if 300 <= n <= 100000:
-                    vals.append(n)
-            except Exception:
-                pass
-        return min(vals) if vals else None
-
-    price = None
-
-    # 1) JSON-LD Product / Offer
-    try:
-        scripts = driver.find_elements(By.CSS_SELECTOR, "script[type='application/ld+json']")
-        for script in scripts:
-            raw = script.get_attribute("textContent") or ""
-            if not raw.strip():
-                continue
-            try:
-                data = json.loads(raw)
-            except Exception:
-                continue
-
-            stack = data if isinstance(data, list) else [data]
-            while stack:
-                item = stack.pop()
-                if not isinstance(item, dict):
-                    continue
-
-                if "@graph" in item and isinstance(item["@graph"], list):
-                    stack.extend(item["@graph"])
-
-                if "offers" in item:
-                    offers = item["offers"]
-                    offers_list = offers if isinstance(offers, list) else [offers]
-                    for offer in offers_list:
-                        if isinstance(offer, dict):
-                            raw_price = offer.get("price")
-                            if raw_price is not None:
-                                try:
-                                    n = int(round(float(str(raw_price).replace(",", "."))))
-                                    if 300 <= n <= 100000:
-                                        price = n
-                                        break
-                                except Exception:
-                                    pass
-                if price is not None:
+                if el.is_displayed() and el.is_enabled():
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", el
+                    )
+                    driver.execute_script("arguments[0].click();", el)
+                    clicked = True
                     break
-            if price is not None:
-                break
+            except Exception:
+                pass
     except Exception:
         pass
 
-    # 2) Meta itemprop=price
-    if price is None:
+    if not clicked:
+        return False
+
+    time.sleep(0.8)
+    after = safe_text(driver)
+
+    if after == before:
+        return False
+
+    # Pozitivní množství v nově otevřeném přehledu.
+    # Uznáme 1 ks, 2 ks, ... i >5 ks.
+    return bool(re.search(
+        r'(?<![\d>])(?:[1-9]\d*|>\s*[0-9]+)\s*ks\b',
+        after,
+        re.I
+    ))
+
+
+# ---------- SMARTY ----------
+def smarty_find(driver):
+    driver.get(STORES["SMARTY.CZ"])
+    time.sleep(3)
+
+    result = []
+    seen = set()
+
+    # 1) Běžné odkazy v DOM.
+    for a in driver.find_elements(By.TAG_NAME, "a"):
         try:
-            for el in driver.find_elements(By.CSS_SELECTOR, "meta[itemprop='price']"):
-                raw = (el.get_attribute("content") or "").strip()
-                if re.fullmatch(r"\d+(?:[.,]\d+)?", raw):
-                    n = int(round(float(raw.replace(",", "."))))
-                    if 300 <= n <= 100000:
-                        price = n
-                        break
+            href = normalize_url(a.get_attribute("href"))
+            name = a.text.strip()
+            low = href.lower()
+            if not href or href in seen:
+                continue
+            if "smarty.cz/" not in low or "elite-trainer-box" not in low:
+                continue
+            if "4c14603" in low:
+                continue
+            seen.add(href)
+            result.append((name, href))
         except Exception:
             pass
 
-    # 3) HTML / DOM jako fallback.
-    # Smarty na produktové stránce uvádí zákaznickou cenu před "bez DPH".
+    # 2) Záloha: produktové URL přímo z HTML. Funguje i když jsou
+    # produktové karty v headless Chromu bez textového <a> elementu.
+    try:
+        html = driver.page_source.replace("\\/", "/")
+        patterns = [
+            r"https?://www\\.smarty\\.cz/[^\"'<>\\s]+elite-trainer-box[^\"'<>\\s]*",
+            r"https?://smarty\\.cz/[^\"'<>\\s]+elite-trainer-box[^\"'<>\\s]*",
+        ]
+        for pattern in patterns:
+            for href in re.findall(pattern, html, flags=re.I):
+                href = normalize_url(href)
+                low = href.lower()
+                if not href or href in seen:
+                    continue
+                if "elite-trainer-box" not in low or "4c14603" in low:
+                    continue
+                seen.add(href)
+                result.append(("", href))
+    except Exception:
+        pass
+
+    # 3) Produktové URL ověříme přes H1; pokud H1 v headless režimu
+    # selže, ponecháme kandidáta — detail se následně kontroluje v smarty_check.
+    verified = []
+    for old_name, href in result:
+        try:
+            driver.get(href)
+            time.sleep(1.0)
+            h1 = driver.find_element(By.TAG_NAME, "h1").text.strip()
+            if "elite trainer box" in h1.lower():
+                verified.append((h1, href))
+            elif old_name and "elite trainer box" in old_name.lower():
+                verified.append((old_name, href))
+        except Exception:
+            if old_name and "elite trainer box" in old_name.lower():
+                verified.append((old_name, href))
+
+    # Bez duplicit.
+    unique = []
+    seen_urls = set()
+    for name, href in verified:
+        if href not in seen_urls:
+            seen_urls.add(href)
+            unique.append((name or "Pokémon Elite Trainer Box", href))
+    return unique
+
+
+def smarty_check(driver, name, url):
+    driver.get(url)
+    time.sleep(1.2)
+    text = safe_text(driver)
+
+    price = price_from_element(driver, [
+        ".price-final",
+        "[class*='price-final']",
+        "[class*='product-price']",
+    ])
     if price is None:
-        for source in (body_text, html):
-            m = re.search(
-                r"(\d[\d\s\xa0]*)\s*Kč\s*(?!bez\s*DPH)",
-                source or "",
-                re.I
-            )
-            if m:
-                try:
-                    n = int(re.sub(r"\s+", "", m.group(1)))
-                    if 300 <= n <= 100000:
-                        price = n
-                        break
-                except Exception:
-                    pass
+        price = price_from_text(text)
 
-    if price is None:
-        price = parse_price(body_text)
-    if price is None:
-        price = parse_price(html)
+    t = text.lower()
 
-    # Dostupnost posuzujeme pouze podle textů Smarty.
-    # "Dostupné na prodejně" znamená skutečný sklad na prodejně.
-    t = (body_text or "").lower()
-    h = (html or "").lower()
+    # Přednostně bereme skutečný sklad.
+    # "Dostupné na prodejně" samo o sobě nestačí.
+    available = False
 
-    bad = [
-        "připravujeme",
-        "pripravujeme",
-        "předobjednávka",
-        "predobjednavka",
-        "předobjednat",
-        "predobjednat",
-        "expedice bude upřesněna",
-        "expedice bude upresnena",
-        "neznámá dostupnost",
-        "neznamá dostupnost",
-        "neznama dostupnost",
-    ]
+    # Kladný centrální sklad s množstvím.
+    if re.search(r'skladem\s+celkem[^0-9>]*(?:>|)\s*[1-9][0-9]*\s*ks?', t, re.I):
+        available = True
 
-    good = [
-        "skladem celkem",
-        "skladem eshop",
-        "skladem na prodejně",
-        "skladem na prodejne",
-        "dostupné na prodejně",
-        "dostupne na prodejne",
-    ]
+    # Pokud je produkt pouze na prodejnách / má "Prodej ukončen",
+    # ověřujeme konkrétní prodejny.
+    if not available and "dostupné na prodejně" in t:
+        available = smarty_store_stock(driver)
 
-    available = any(x in t for x in good)
-
-    # Některé texty mohou být schované v HTML atributu/skriptu.
-    if not available:
-        available = any(x in h for x in [
-            "skladem celkem",
-            "skladem eshop",
-            "skladem na prodejně",
-            "skladem na prodejne",
-            "dostupné na prodejně",
-            "dostupne na prodejne",
-        ])
-
-    if any(x in t for x in bad):
-        # "Dostupné na prodejně" má přednost před obecným textem
-        # o neznámé online dostupnosti.
-        if not any(x in t for x in [
-            "dostupné na prodejně",
-            "dostupne na prodejne",
-            "skladem na prodejně",
-            "skladem na prodejne",
-            "skladem eshop",
-            "skladem celkem",
-        ]):
-            available = False
+    # Explicitní nedostupnost má přednost, pokud jsme nenašli
+    # konkrétní kladný sklad.
+    if not available and any(x in t for x in [
+        "není skladem", "neni skladem",
+        "vyprodáno", "vyprodano",
+        "prodej ukončen", "prodej ukoncen",
+    ]):
+        return price, False
 
     return price, available
 
+
+# ---------- POKEMON4U ----------
 def pokemon4u_find(driver):
     driver.get(STORES["POKEMON4U.CZ"])
     time.sleep(2)
@@ -1418,178 +1345,85 @@ CHECKERS = {
 }
 
 
-def normalize_product_text(text):
-    text = (text or "").lower()
-    text = text.replace("–", "-").replace("—", "-")
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def special_match(name, url=""):
-    """Rozpozná pouze 4 požadované speciální ETB."""
-    t = normalize_product_text(f"{name} {url}")
-
-    # 1) Mega Lucario ETB.
-    # Některé obchody píší "Mega Lucario", jiné "Mega Evolutions ... Lucario".
-    if (
-        "elite trainer box" in t
-        and (
-            "mega lucario" in t
-            or ("mega evolution" in t and "lucario" in t)
-        )
-    ):
-        return 3500, "Mega Lucario – Elite Trainer Box"
-
-    # 2) Základní Mega Evolution 01 ETB.
-    # Důležité: obecné "Mega Evolution + ETB" nestačí, protože by chytalo
-    # Pitch Black, Perfect Order, Gardevoir apod.
-    if "elite trainer box" in t and (
-        "mega evolution 01" in t
-        or "mega evolutions 01" in t
-    ):
-        return 3500, "Mega Evolution 01 – Elite Trainer Box"
-
-    # Alternativní zápis názvu základního produktu bez čísla.
-    # Pouze pokud současně neobsahuje známé jiné Mega Evolution sety/pokémony.
-    if "elite trainer box" in t and "mega evolution" in t:
-        excluded = [
-            "perfect order",
-            "pitch black",
-            "gardevoir",
-            "lucario",
-            "venusaur",
-            "charizard",
-            "blastoise",
-            "greninja",
-            "diancie",
-            "marowak",
-            "altaria",
-            "ampharos",
-            "manectric",
-            "kangaskhan",
-            "latias",
-            "latios",
-        ]
-        if not any(x in t for x in excluded):
-            return 3500, "Mega Evolution – Elite Trainer Box"
-
-    # 3) Prismatic Evolutions.
-    if "prismatic evolutions" in t and "elite trainer box" in t:
-        return 3500, "Prismatic Evolutions – Elite Trainer Box"
-
-    # 4) Ascended Heroes.
-    if "ascended heroes" in t and "elite trainer box" in t:
-        return 3500, "Ascended Heroes – Elite Trainer Box"
-
-    return None, None
-
 def check_store(driver, shop, state):
-    url = STORES[shop]
-    finder = FINDERS[shop]
-    checker = CHECKERS[shop]
-
     print(f"\n===== {shop} =====")
 
     try:
-        products = finder(driver)
+        links = FINDERS[shop](driver)
     except Exception as e:
-        print(f"❌ Chyba při hledání: {e}")
+        print("CHYBA PŘI HLEDÁNÍ:", e)
         return False
 
-    print(f"Nalezeno ETB: {len(products)}")
+    # Nejprve odfiltrujeme jen 4 speciální ETB.
+    special_links = []
+    for name, url in links:
+        limit, set_name = special_match(name, url)
+        if limit is not None:
+            special_links.append((name, url, limit, set_name))
+
+    print("Nalezeno speciálních ETB:", len(special_links))
     changed = False
 
-    for product in products:
-        if isinstance(product, dict):
-            name = product.get("name", "")
-            product_url = product.get("url", url)
-        elif isinstance(product, (tuple, list)) and len(product) >= 2:
-            name = str(product[0])
-            product_url = str(product[1])
-        else:
-            name = str(product)
-            product_url = url
-
-        special_limit, special_name = special_match(name, product_url)
-
-        if special_name:
-            print(f"⭐ SPECIÁLNĚ SLEDUJI: {name}")
-            print(f"   Rozpoznáno jako: {special_name} | Limit: {special_limit} Kč")
-        else:
-            print(f"   — mimo speciální seznam: {name}")
-            continue
-
+    for name, url, limit, set_name in special_links:
         try:
-            price, available = checker(driver, name, product_url)
-        except Exception as e:
-            print(f"   ❌ Chyba kontroly: {e}")
-            price, available = None, False
+            print(f"\nKontroluji: {set_name}")
+            price, available = CHECKERS[shop](driver, name, url)
+            print("Cena:", price)
+            print("Dostupnost:", available)
 
-        print(f"   Cena: {price}")
-        print(f"   Dostupnost: {available}")
+            key = f"{shop}|{url}"
+            qualifies = (
+                price is not None
+                and price <= limit
+                and available
+            )
 
-        key = f"{shop}|{product_url}"
-        old = state.get(key, {})
+            old = state.get(key)
+            last_alert_price = old.get("last_alert_price") if isinstance(old, dict) else None
 
-        # Kompatibilita se starším state_special.json.
-        if isinstance(old, bool):
-            old = {
-                "qualifies": old,
-                "last_alert_price": None
-            }
-
-        qualifies = (
-            price is not None
-            and price <= special_limit
-            and available
-        )
-
-        last_alert_price = old.get("last_alert_price")
-
-        if qualifies:
-            if last_alert_price is None:
-                discord_alert(
-                    shop,
-                    special_name,
-                    price,
-                    product_url,
-                    reason="první splnění limitu"
-                )
-                state[key] = {
-                    "qualifies": True,
-                    "last_alert_price": price
-                }
-                changed = True
-            elif price < last_alert_price:
-                discord_alert(
-                    shop,
-                    special_name,
-                    price,
-                    product_url,
-                    reason="pokles ceny",
-                    old_price=last_alert_price
-                )
-                state[key] = {
-                    "qualifies": True,
-                    "last_alert_price": price
-                }
-                changed = True
+            if qualifies:
+                # První nalezení = upozornění.
+                # Další upozornění jen při skutečném poklesu ceny.
+                if last_alert_price is None or price < last_alert_price:
+                    print("🔴 SPECIÁLNÍ PODMÍNKY SPLNĚNY!")
+                    discord_alert(
+                        shop, name, price, url,
+                        limit=limit,
+                        set_name=set_name
+                    )
+                    state[key] = {
+                        "last_alert_price": price,
+                        "available": True,
+                    }
+                    changed = True
+                else:
+                    print("ℹ️ Upozornění už bylo odesláno pro tuto cenu.")
+                    if old != {"last_alert_price": last_alert_price, "available": True}:
+                        state[key] = {
+                            "last_alert_price": last_alert_price,
+                            "available": True,
+                        }
+                        changed = True
             else:
-                print("   ℹ️ Cena neklesla – upozornění neopakuji.")
-        else:
-            print("   Podmínky nesplněny.")
-            if old.get("qualifies") or last_alert_price is not None:
-                state[key] = {
-                    "qualifies": False,
-                    "last_alert_price": None
-                }
-                changed = True
+                # Jakmile produkt přestane být dostupný / splňovat limit,
+                # další naskladnění může znovu vyvolat alert.
+                if old is not None:
+                    state[key] = {
+                        "last_alert_price": None,
+                        "available": False,
+                    }
+                    changed = True
+                print("Podmínky nesplněny.")
+
+        except Exception as e:
+            print("CHYBA PRODUKTU:", e)
 
     return changed
 
+
 def main():
     print("======================================")
-    print("       POKÉMON ETB HLÍDAČ - SPECIÁLNÍ")
+    print("       SPECIÁLNÍ ETB HLÍDAČ - CLOUD")
     print("======================================")
     print(f"{len(STORES)} obchodů | speciální limit: 3500 Kč | plánovaná kontrola: 5 min")
 
@@ -1602,12 +1436,14 @@ def main():
 
     try:
         print("\n======================================")
-        print(datetime.now().strftime("%H:%M:%S"), "- NOVÁ KONTROLA")
+        print(datetime.now().strftime("%H:%M:%S"), "- NOVÁ SPECIÁLNÍ KONTROLA")
         print("======================================")
 
         for shop in STORES:
             changed = check_store(driver, shop, state) or changed
 
+        # Stav ukládáme VŽDY, aby se po každém běhu zachovala informace
+        # o poslední odeslané ceně i po běhu bez změny.
         save_state(state)
         if changed:
             print("✅ Stav uložen do state_special.json")
@@ -1622,4 +1458,5 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
     main()
