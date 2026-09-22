@@ -5,6 +5,11 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
+# Zabrání souběžným běhům, které mohly způsobovat duplicitní Discord alerty.
+concurrency:
+  group: special-etb-hlidac
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -29,13 +34,13 @@ jobs:
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
-        run: python hlidac_special_red.py
+        run: python hlidac_special_red_v15.py
 
       - name: Uložení stavu
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state_special.json
-          git diff --cached --quiet || git commit -m "Aktualizace speciálního hlídače"
+          git diff --cached --quiet || git commit -m "Aktualizace stavu speciálního hlídače"
           git pull --rebase origin main
           git push
