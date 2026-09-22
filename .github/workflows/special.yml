@@ -5,7 +5,7 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
-# Zabrání souběžným běhům, které mohly způsobovat duplicitní Discord alerty.
+# Zabrání souběžnému běhu dvou instancí hlídače.
 concurrency:
   group: special-etb-hlidac
   cancel-in-progress: false
@@ -34,7 +34,7 @@ jobs:
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
-        run: python hlidac_special_red_v15.py
+        run: python hlidac_special_red.py
 
       - name: Uložení stavu
         run: |
