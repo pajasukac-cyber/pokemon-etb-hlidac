@@ -912,85 +912,30 @@ def _find_luxor_json_price(obj):
 
     return None
 
-def _find_luxor_json_offer(obj):
-    """Vrátí (price, availability) z Product/Offer JSON-LD."""
-    if isinstance(obj, dict):
-        offers = obj.get("offers")
-
-        if isinstance(offers, dict):
-            price = offers.get("price")
-            availability = str(offers.get("availability") or "").lower()
-            parsed_price = None
-
-            if price not in (None, ""):
-                try:
-                    parsed_price = int(round(float(str(price).replace(",", "."))))
-                except Exception:
-                    pass
-
-            if parsed_price is not None or availability:
-                return parsed_price, availability
-
-        elif isinstance(offers, list):
-            for offer in offers:
-                found = _find_luxor_json_offer({"offers": offer})
-                if found != (None, ""):
-                    return found
-
-        for value in obj.values():
-            found = _find_luxor_json_offer(value)
-            if found != (None, ""):
-                return found
-
-    elif isinstance(obj, list):
-        for value in obj:
-            found = _find_luxor_json_offer(value)
-            if found != (None, ""):
-                return found
-
-    return None, ""
-
-
 def luxor_check(driver, name, url):
     driver.get(url)
     time.sleep(1.5)
 
-    full_text = safe_text(driver)
+    text = safe_text(driver)
+    t = text.lower()
     price = None
-    json_availability = ""
 
-    # 1) JSON-LD Product/Offer – pokud Luxor dostupnost poskytuje,
-    # je to nejpřesnější údaj.
+    # 1) JSON-LD Product/Offer – preferovaná metoda.
     try:
         scripts = driver.find_elements(By.CSS_SELECTOR, "script[type='application/ld+json']")
         for script in scripts:
             raw = script.get_attribute("textContent") or ""
             if not raw.strip():
                 continue
-
             try:
                 data = json.loads(raw)
             except Exception:
                 continue
-
-            p, availability = _find_luxor_json_offer(data)
-
-            if p is not None and price is None:
-                price = p
-
-            if availability:
-                json_availability = availability
+            price = _find_luxor_json_price(data)
+            if price is not None:
                 break
     except Exception:
         pass
-
-    if json_availability:
-        if "outofstock" in json_availability or "soldout" in json_availability:
-            return price, False
-        if "instock" in json_availability:
-            return price, True
-        if "preorder" in json_availability:
-            return price, False
 
     # 2) Meta Product price.
     if price is None:
@@ -1003,7 +948,8 @@ def luxor_check(driver, name, url):
         except Exception:
             pass
 
-    # 3) Viditelná cena.
+    # 3) Viditelná cena na produktové stránce.
+    # Hledáme celý údaj s Kč, nikdy ne první tři číslice z větší ceny.
     if price is None:
         try:
             candidates = driver.execute_script("""
@@ -1012,106 +958,92 @@ def luxor_check(driver, name, url):
                   .filter(t => /^\\d{1,2}(?:[ .]\\d{3})\\s*Kč$/.test(t)
                             || /^\\d{3,5}\\s*Kč$/.test(t));
             """)
-
             parsed = []
             for raw in candidates or []:
                 value = int(re.sub(r"[^0-9]", "", raw))
                 if 100 <= value <= 99999:
                     parsed.append(value)
 
+            # Na detailu produktu bývá hlavní cena jednou z těchto hodnot.
+            # Preferujeme cenu <= 9999 a nejčastější hodnotu.
             if parsed:
                 from collections import Counter
                 price = Counter(parsed).most_common(1)[0][0]
         except Exception:
             pass
 
-    # DŮLEŽITÉ:
-    # Nepoužíváme celý body text stránky.
-    # Luxor má v hlavičce obecné "co nemáme skladem, objednáme u dodavatele".
-    # Starý parser proto chybně označil produkt jako skladem.
-    #
-    # Dostupnost hledáme pouze v konkrétním bloku produktu.
-    scope_text = ""
-
-    try:
-        h1 = driver.find_element(By.TAG_NAME, "h1")
-        node = h1
-
-        for _ in range(8):
-            try:
-                parent = node.find_element(By.XPATH, "./..")
-            except Exception:
-                break
-
-            pt = (parent.text or "").strip()
-
-            if (
-                name.lower() in pt.lower()
-                and re.search(r"\d[\d\s\xa0]*\s*Kč", pt, re.I)
-            ):
-                scope_text = pt
-
-                # Pokud blok obsahuje skutečný nákupní ovladač,
-                # dál už ho nerozšiřujeme.
-                try:
-                    controls = parent.find_elements(
-                        By.XPATH,
-                        ".//*[self::button or self::a]"
-                        "[contains(translate(normalize-space(.), "
-                        "'ABCDEFGHIJKLMNOPQRSTUVWXYZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ', "
-                        "'abcdefghijklmnopqrstuvwxyzáčďéěíňóřšťúůýž'), "
-                        "'do košíku') "
-                        "or contains(translate(normalize-space(.), "
-                        "'ABCDEFGHIJKLMNOPQRSTUVWXYZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ', "
-                        "'abcdefghijklmnopqrstuvwxyzáčďéěíňóřšťúůýž'), "
-                        "'koupit') "
-                        "or contains(translate(normalize-space(.), "
-                        "'ABCDEFGHIJKLMNOPQRSTUVWXYZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ', "
-                        "'abcdefghijklmnopqrstuvwxyzáčďéěíňóřšťúůýž'), "
-                        "'rezervovat')]"
-                    )
-
-                    if controls:
-                        break
-                except Exception:
-                    pass
-
-            node = parent
-
-        if not scope_text:
-            scope_text = h1.text or ""
-
-    except Exception:
-        scope_text = ""
-
-    scope_low = scope_text.lower()
-
-    # Explicitní nedostupnost konkrétního produktu.
     bad = [
         "není skladem", "neni skladem",
         "není k dispozici", "neni k dispozici",
         "vyprodáno", "vyprodano",
         "předobjednávka", "predobjednavka",
-        "předobjednat", "predobjednat",
-        "cena v předprodeji", "cena v predprodeji",
     ]
-
-    if any(x in scope_low for x in bad):
+    if any(x in t for x in bad):
         return price, False
 
-    # Samotné slovo "skladem" už NESTAČÍ.
-    # Uznáváme pouze konkrétní nákupní/dostupnostní signály.
-    good = [
-        "do košíku", "do kosiku",
-        "přidat do košíku", "pridat do kosiku",
-        "koupit", "rezervovat",
-        "skladem na e-shopu", "skladem na eshopu",
-    ]
-
-    available = any(x in scope_low for x in good)
-
+    good = ["skladem", "do košíku", "do kosiku", "koupit", "rezervovat"]
+    available = any(x in t for x in good)
     return price, available
 
+
+
+def knihy_jsonld_product(driver):
+    """Vrátí (price, available) z Product JSON-LD, pokud je na stránce."""
+    price = None
+    available = None
+    try:
+        scripts = driver.find_elements(By.CSS_SELECTOR, "script[type='application/ld+json']")
+        for script in scripts:
+            raw = script.get_attribute("textContent") or ""
+            if not raw.strip():
+                continue
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+
+            items = data if isinstance(data, list) else [data]
+            expanded = []
+            for item in items:
+                if isinstance(item, dict) and "@graph" in item and isinstance(item["@graph"], list):
+                    expanded.extend(item["@graph"])
+                else:
+                    expanded.append(item)
+
+            for item in expanded:
+                if not isinstance(item, dict):
+                    continue
+                typ = item.get("@type")
+                if isinstance(typ, list):
+                    is_product = "Product" in typ
+                else:
+                    is_product = typ == "Product"
+                if not is_product:
+                    continue
+
+                offers = item.get("offers")
+                if isinstance(offers, list):
+                    offers = offers[0] if offers else None
+                if not isinstance(offers, dict):
+                    continue
+
+                raw_price = offers.get("price")
+                if raw_price is not None:
+                    try:
+                        p = float(str(raw_price).replace(" ", "").replace(",", "."))
+                        if 300 <= p <= 100000:
+                            price = int(round(p))
+                    except Exception:
+                        pass
+
+                av = str(offers.get("availability", "")).lower()
+                if "instock" in av or "limitedavailability" in av:
+                    available = True
+                elif "outofstock" in av or "soldout" in av or "discontinued" in av:
+                    available = False
+    except Exception:
+        pass
+    return price, available
 
 # ---------- KNIHY DOBROVSKÝ ----------
 def knihy_dobrovsky_find(driver):
@@ -1174,58 +1106,68 @@ def knihy_dobrovsky_find(driver):
     return verified
 
 
+
 def knihy_dobrovsky_check(driver, name, url):
     driver.get(url)
-    time.sleep(1.2)
+    time.sleep(1.0)
     text = safe_text(driver)
-
-    price = price_from_element(driver, [
-        "[class*='price']",
-        "meta[itemprop='price']",
-    ])
-    if price is None:
-        price = price_from_text("\n".join(text.splitlines()[:140]))
-    if price is None:
-        price = price_from_html(driver)
-
     t = text.lower()
-    negatives = [
-        "nedostupné", "nedostupne", "produkt je vyprodaný", "produkt je vyprodany",
-        "vyprodáno", "vyprodano", "není skladem", "neni skladem",
+
+    # U nedostupného produktu cenu vůbec nehledáme. Na stránce mohou být
+    # jiné částky (dárky, bannery apod.) a ty se nesmí vydávat za cenu ETB.
+    hard_negative = [
+        "nedostupné", "nedostupne",
+        "produkt je vyprodaný", "produkt je vyprodany",
+        "vyprodáno", "vyprodano",
+        "není skladem", "neni skladem",
+        "momentálně nedostupné", "momentalne nedostupne",
         "předobjednávka", "predobjednavka",
     ]
-    if any(x in t for x in negatives):
-        return price, False
 
-    # Na produktové stránce je dostupnost přímo u produktu; "Do košíku"
-    # je silný signál, že lze objednat.
-    available = any(x in t for x in [
-        "do košíku", "do kosiku", "skladem na e-shopu", "skladem",
-        "koupit"
-    ])
+    json_price, json_available = knihy_jsonld_product(driver)
+
+    if any(x in t for x in hard_negative):
+        return None, False
+
+    # Nejdřív bereme strukturovaná data produktu.
+    price = json_price
+    available = json_available if json_available is not None else False
+
+    # Pokud JSON-LD dostupnost neobsahuje, použijeme jen silné signály
+    # z produktové stránky. Obecné částky na stránce ignorujeme.
+    if not available:
+        strong_positive = [
+            "do košíku", "do kosiku",
+            "skladem na e-shopu", "skladem na eshopu",
+            "skladem celkem",
+        ]
+        available = any(x in t for x in strong_positive)
+
+    if price is None and available:
+        # Cena v meta itemprop je bezpečnější než obecný [class*=price]
+        # nebo celé HTML, kde se nachází mnoho nesouvisejících částek.
+        try:
+            meta = driver.find_elements(By.CSS_SELECTOR, "meta[itemprop='price']")
+            for el in meta:
+                raw = el.get_attribute("content") or ""
+                raw = raw.replace(" ", "").replace(",", ".")
+                try:
+                    p = float(raw)
+                    if 300 <= p <= 100000:
+                        price = int(round(p))
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if price is None and available:
+        # Poslední fallback: jen text v horní části produktové stránky,
+        # nikoli celé HTML a nikoli obecné elementy s třídou "price".
+        top = "\n".join(text.splitlines()[:80])
+        price = price_from_text(top)
+
     return price, available
-
-FINDERS = {
-    "SMARTY.CZ": smarty_find,
-    "POKEMON4U.CZ": pokemon4u_find,
-    "ALZA.CZ": alza_find,
-    "GOOD-LUCK.CZ": goodluck_find,
-    "POKEMALL.CZ": pokemall_find,
-    "TCGSHOP.CZ": tcgshop_find,
-    "LUXOR.CZ": luxor_find,
-    "KNIHY-DOBROVSKY.CZ": knihy_dobrovsky_find,
-}
-
-CHECKERS = {
-    "SMARTY.CZ": smarty_check,
-    "POKEMON4U.CZ": pokemon4u_check,
-    "ALZA.CZ": alza_check,
-    "GOOD-LUCK.CZ": goodluck_check,
-    "POKEMALL.CZ": pokemall_check,
-    "TCGSHOP.CZ": tcgshop_check,
-    "LUXOR.CZ": luxor_check,
-    "KNIHY-DOBROVSKY.CZ": knihy_dobrovsky_check,
-}
 
 
 def check_store(driver, shop, state):
