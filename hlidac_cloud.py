@@ -1170,6 +1170,32 @@ def knihy_dobrovsky_check(driver, name, url):
     return price, available
 
 
+
+# ---------- REGISTRY ----------
+# Důležité: všechny obchody musí být zaregistrované, jinak check_store
+# nemá přes co zavolat jejich finder/checker.
+FINDERS = {
+    "SMARTY.CZ": smarty_find,
+    "POKEMON4U.CZ": pokemon4u_find,
+    "ALZA.CZ": alza_find,
+    "GOOD-LUCK.CZ": goodluck_find,
+    "POKEMALL.CZ": pokemall_find,
+    "TCGSHOP.CZ": tcgshop_find,
+    "LUXOR.CZ": luxor_find,
+    "KNIHY-DOBROVSKY.CZ": knihy_dobrovsky_find,
+}
+
+CHECKERS = {
+    "SMARTY.CZ": smarty_check,
+    "POKEMON4U.CZ": pokemon4u_check,
+    "ALZA.CZ": alza_check,
+    "GOOD-LUCK.CZ": goodluck_check,
+    "POKEMALL.CZ": pokemall_check,
+    "TCGSHOP.CZ": tcgshop_check,
+    "LUXOR.CZ": luxor_check,
+    "KNIHY-DOBROVSKY.CZ": knihy_dobrovsky_check,
+}
+
 def check_store(driver, shop, state):
     print(f"\n===== {shop} =====")
 
